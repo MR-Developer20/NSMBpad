@@ -9,8 +9,17 @@ ref/*.ciso
 ref/*.wbfs
 ref/*.wia
 ref/*.rvz
+*.dol
+*.rel
+*.rel.LZ
 private/
 generated/
+
+# Community-sourced symbol/address maps (reference data, not redistributed)
+maps/
+
+# Build/tool logs
+logs/
 
 # Reference checkouts are pinned locally and described by lock files.
 ref/upstream/
