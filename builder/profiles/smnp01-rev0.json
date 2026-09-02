@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "id": "smnp01-rev0",
+  "displayName": "New Super Mario Bros. Wii PAL SMNP01 revision 0",
+  "status": "DRAFT — P1 gate not run. No user disc image has been supplied or verified in this environment; every value below marked \"unverified\" is taken from the plan document (docs/NSMBW-PLAN.md §2.1) and has not been confirmed against an actual dump.",
+  "sourceDependencies": [
+    "WiiCompiled",
+    "SunPad",
+    "Dolphin",
+    "decomp-toolkit (dtk)"
+  ],
+  "game": {
+    "discId": "SMNP01",
+    "region": "P",
+    "discNumber": 0,
+    "revision": 0,
+    "revisionNote": "Deliberately pinned to rev 0 (not rev 2) to match decomp/symbol-map provenance. Rev 0 carries a known World 7-Tower boss-room softlock, accepted as-is — see docs/NSMBW-KNOWN-ISSUES.md."
+  },
+  "containers": {
+    "extensions": ["iso", "gcm", "gcz", "ciso", "wbfs", "wia", "rvz"],
+    "acceptedImages": []
+  },
+  "extraction": {
+    "extractor": {"command": "nodtool", "version": "2.0.0-alpha.9"},
+    "requiredFiles": [
+      "sys/boot.bin",
+      "sys/bi2.bin",
+      "sys/apploader.img",
+      "sys/fst.bin",
+      "files/wiimj2d.dol",
+      "files/rel/d_basesNP.rel.LZ",
+      "files/rel/d_en_bossNP.rel.LZ",
+      "files/rel/d_enemiesNP.rel.LZ",
+      "files/rel/d_profileNP.rel.LZ"
+    ],
+    "lzDecompression": {
+      "tool": "NSMBW-Decomp tools/uncompress_lz.py (ported)",
+      "appliesTo": ["d_basesNP.rel", "d_en_bossNP.rel", "d_enemiesNP.rel", "d_profileNP.rel"]
+    },
+    "executables": {
+      "dol": {
+        "path": "files/wiimj2d.dol",
+        "md5": "ddab9e5dca53d8c18bf4051b927e822e",
+        "md5Source": "plan §2.1, unverified against an actual dump"
+      },
+      "rels": [
+        {
+          "name": "d_basesNP.rel",
+          "md5": "17096d0ed441d44a0c31039138a8d7f8",
+          "md5Source": "plan §2.1, unverified against an actual dump",
+          "loadAddress": null,
+          "loadAddressNote": "Plan §2.1 asserts RELs load at deterministic fixed addresses every run, citing NSMBW-Decomp docs. Not yet confirmed empirically. Fill in at P2 gate."
+        },
+        {
+          "name": "d_en_bossNP.rel",
+          "md5": "f8cffd634edbec6c1bc210dab02c1e32",
+          "md5Source": "plan §2.1, unverified against an actual dump",
+          "loadAddress": null,
+          "loadAddressNote": "See d_basesNP.rel note."
+        },
+        {
+          "name": "d_enemiesNP.rel",
+          "md5": "458f1aa94706dde1a8f2f9d97ff1f35c",
+          "md5Source": "plan §2.1, unverified against an actual dump",
+          "loadAddress": null,
+          "loadAddressNote": "See d_basesNP.rel note."
+        },
+        {
+          "name": "d_profileNP.rel",
+          "md5": "393bf12ef4254dd1ea1366d5b06fbebb",
+          "md5Source": "plan §2.1, unverified against an actual dump",
+          "loadAddress": null,
+          "loadAddressNote": "Actor profile/constructor registry — the dominant indirect-dispatch surface (plan §2.2). See d_basesNP.rel note."
+        }
+      ]
+    }
+  },
+  "translation": {
+    "memoryBase": "0x80000000",
+    "entryPoints": [],
+    "entryPointsNote": "Not yet determined. Unlike the MKWii profile above, no verified entry address is available yet — do not guess one.",
+    "functionMap": "maps/",
+    "functionMapNote": "NSMBW-Maps address maps + RootCubed/nsmbw_hashAttack symbol recovery, fetched into gitignored maps/ per plan §2.4. Reference data only — do not redistribute.",
+    "expectedGeneratedFunctions": null,
+    "expectedGeneratedFunctionsNote": "Plan §2.3: NSMBW's DOL+REL function count is unpublished. Do not carry over the MKWii profile's 29,637/29,065/4,186 figures — they are a different binary. Fill in once dtk/WiiCompiled boundary analysis (P2/P3) produces a real count.",
+    "profileTableCoverage": {
+      "required": true,
+      "note": "Plan §2.2: d_profileNP.rel is the actor profile/constructor-pointer registry. Every profile-table entry must resolve to a translated function or appear in an explicit known-gaps list. This is a P3/P5 gate, not optional cleanup."
+    }
+  }
+}
