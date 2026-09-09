@@ -51,14 +51,14 @@ check_reference ref/upstream/WheelWizard \
   945ba734c60c492f97e2921f1284dbfd00a79132 \
   e51fe2fc48fbf67ccd64c350cc5e9a50f13fcdb2
 check_reference ref/upstream/rr-pulsar \
-  b566a5db70c92321d310059565e41aacadcdf04b \
-  d8cdd663ac3d7a3d5b5275bae4d0a5549f9679db
+  93ba8c8a486bd771c97ffc8b68fd504f47f742b5 \
+  320825ec78da1eed8f82cc1abb0335c3d806d9fe
 check_reference ref/upstream/wfc-server \
   fbd30fa41a35fe8a407e3a49bc83fe4ff91fd35b \
   a36a2ae07e9e86f8f199aa275caede19a118731f
 check_reference ref/upstream/wfc-patcher-wii \
-  7751ec3df82b22bbaf8169e948a6bb5e75dc3aa0 \
-  198d0df0b3758c4bff14d11d1df003d2156ec3f2
+  9ee5c2dfdcbe97408786184566ab50c9bee0d1eb \
+  3fac5511d0135a7fcce171c32d7cc2848ddb2303
 check_reference ref/upstream/dolphin \
   4f8af23db516d8b6e9cd00e7b261a65b026514a8 \
   f44613fc11ba82c609e12b434e0d7bc80c11ac01

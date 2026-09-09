@@ -19,6 +19,20 @@ iPadOS. The production PNG's SHA-256 is
 Xcode applies the system-generated dark and tinted treatments from that single
 high-resolution icon.
 
+## tvOS layered icon
+
+The tvOS icon and Top Shelf image are original KartPad project artwork derived
+from the repository-owned abstract K-circuit SVG described below. The tvOS
+catalog separates the opaque midnight background, circuit rings, and K mark
+into three layers so Apple TV can apply its native focus and parallax effects.
+It contains no extracted Wii banner, Nintendo image, game screenshot, course,
+character, vehicle, item, or other user-supplied game data.
+
+The editable tvOS layer masters are under `branding/tvos/`; their compiled PNG
+counterparts are under `apple/tvos/Assets.xcassets/`. The background layer is
+opaque, foreground layers preserve transparency, and the primary icon content
+is kept inside the wide-icon safe area.
+
 ## Original abstract and macOS icon
 
 The KartPad icon is original project artwork created on 2026-08-28. OpenAI's built-in image-generation tool produced the initial concept at `branding/KartPadIcon-concept-ai.png`; its SHA-256 is `9e0b4a62d1be64e5108b2b5d9fa2a5611683c0709b1d5baf2c8685afd383ed60`.
@@ -31,3 +45,11 @@ appearance variants. They remain the source of the current macOS `.icns`, but
 are no longer referenced by the iOS/iPadOS AppIcon set.
 
 `branding/exports/KartPad.icns` is the macOS bundle icon generated from the opaque production export. Its ten standard and Retina members validate at 16, 32, 64, 128, 256, 512, and 1024 pixels; its SHA-256 is `2c83d844e0fe895cae99bc4ed8ea976a969b3035833373c39af31247b17ea7b8`.
+
+## macOS icon alignment in 0.4.9
+
+The macOS ICNS and all of its standard/Retina sizes now derive from the exact
+shipped iPhone/iPad `AppIcon.appiconset/KartPadIcon-1024.png` K-circuit artwork,
+using `scripts/generate-macos-icon-assets.sh`. The earlier vector icon and its
+old ICNS hash above are historical. The package audit compares the bundled ICNS
+with the current export to prevent an old logo from shipping again.

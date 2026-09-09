@@ -1,5 +1,8 @@
 #include "KartPadClassicInput.h"
 
+#include <algorithm>
+#include <cmath>
+
 namespace kartpad::mobile {
 namespace {
 
@@ -42,6 +45,19 @@ KartPadClassicInputState AdaptSunPadInput(const SunPadInputState input) noexcept
     }
   }
   return output;
+}
+
+void ApplyMotionInput(KartPadClassicInputState& input, const float steering,
+                      const bool shakeTrick) noexcept {
+  const float boundedSteering =
+      std::isfinite(steering) ? std::clamp(steering, -1.0f, 1.0f) : 0.0f;
+  const int motionStick = static_cast<int>(std::lround(boundedSteering * 127.0f));
+  if (std::abs(motionStick) > std::abs(static_cast<int>(input.leftStickX))) {
+    input.leftStickX = static_cast<std::int8_t>(motionStick);
+  }
+  if (shakeTrick) {
+    input.buttons |= kClassicButtonUp;
+  }
 }
 
 }  // namespace kartpad::mobile

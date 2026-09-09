@@ -123,7 +123,7 @@
 
 - (void)gameOverlayRequestsGameDataFolderImport:(SunPadGameOverlay *)overlay {
     (void)overlay;
-    [self showIntegrationAlert:@"Import from KartPad Folder"];
+    [self showIntegrationAlert:@"Import from This Installation's Folder"];
 }
 
 - (void)gameOverlayRequestsGameDataRemoval:(SunPadGameOverlay *)overlay {

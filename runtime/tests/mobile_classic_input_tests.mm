@@ -63,6 +63,21 @@ void TestEveryButton() {
   Require(output.buttons == allDestinations, "simultaneous-button mapping mismatch");
 }
 
+void TestMotionInput() {
+  KartPadClassicInputState input;
+  input.leftStickX = 90;
+  input.buttons = kartpad::mobile::kClassicButtonA;
+  kartpad::mobile::ApplyMotionInput(input, -0.5f, true);
+  Require(input.leftStickX == 90, "motion overrode stronger touch steering");
+  Require((input.buttons & kartpad::mobile::kClassicButtonUp) != 0,
+          "shake did not produce D-pad Up");
+  Require((input.buttons & kartpad::mobile::kClassicButtonA) != 0,
+          "shake cleared an existing button");
+
+  kartpad::mobile::ApplyMotionInput(input, -1.0f, false);
+  Require(input.leftStickX == -127, "stronger motion steering was ignored");
+}
+
 }  // namespace
 
 int main() {
@@ -70,6 +85,7 @@ int main() {
     try {
       TestAxesAndConnection();
       TestEveryButton();
+      TestMotionInput();
       std::cout << "KartPad mobile Classic input adapter passed\n";
       return EXIT_SUCCESS;
     } catch (const std::exception& error) {

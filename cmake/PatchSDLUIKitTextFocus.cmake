@@ -1,0 +1,15 @@
+# SDL must not treat native KartPad text fields as its hidden IME field.
+# Apply only to the disposable fetched SDL copy, never a system installation.
+set(_kartpad_uikit "${sdl_SOURCE_DIR}/src/video/uikit/SDL_uikitviewcontroller.m")
+file(READ "${_kartpad_uikit}" _kartpad_text)
+set(_kartpad_before "selector:@selector(textFieldTextDidChange:)\n                   name:UITextFieldTextDidChangeNotification\n                 object:nil];")
+set(_kartpad_after "selector:@selector(textFieldTextDidChange:)\n                   name:UITextFieldTextDidChangeNotification\n                 object:textField];")
+string(FIND "${_kartpad_text}" "${_kartpad_after}" _kartpad_patched)
+if (_kartpad_patched EQUAL -1)
+  string(FIND "${_kartpad_text}" "${_kartpad_before}" _kartpad_match)
+  if (_kartpad_match EQUAL -1)
+    message(FATAL_ERROR "SDL UIKit text observer changed; review the focus fix")
+  endif ()
+  string(REPLACE "${_kartpad_before}" "${_kartpad_after}" _kartpad_text "${_kartpad_text}")
+  file(WRITE "${_kartpad_uikit}" "${_kartpad_text}")
+endif ()

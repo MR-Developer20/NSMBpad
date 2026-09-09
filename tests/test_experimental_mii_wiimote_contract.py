@@ -8,10 +8,15 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 class ExperimentalMiiWiimoteContractTests(unittest.TestCase):
     def test_ios_menu_exposes_features_in_expected_submenus(self) -> None:
         source = (REPO / "apple/ios/KartPadRuntimeOverlayHost.mm").read_text()
-        self.assertIn('actionWithTitle:@"Manage Miis…"', source)
+        self.assertIn('actionWithTitle:@"Player Identity…"', source)
+        self.assertIn('actionWithTitle:@"Rename or Delete Licenses…"', source)
+        self.assertIn('actionWithTitle:@"Rename License…"', source)
+        self.assertIn('actionWithTitle:@"Delete License…"', source)
+        self.assertIn('actionWithTitle:@"Remove Mii Appearance…"', source)
+        self.assertIn('actionWithTitle:@"Edit Mii Name…"', source)
         self.assertIn('menuWithTitle:@"Controls"', source)
         self.assertIn('actionWithTitle:@"Experimental Wii Remote + Nunchuk…"', source)
-        self.assertLess(source.index('actionWithTitle:@"Manage Miis…"'),
+        self.assertLess(source.index('actionWithTitle:@"Player Identity…"'),
                         source.index('gameData = [UIMenu menuWithTitle:dataMenu.title'))
 
     def test_mii_changes_are_staged_and_applied_before_runtime(self) -> None:
@@ -19,8 +24,16 @@ class ExperimentalMiiWiimoteContractTests(unittest.TestCase):
         runtime = (REPO / "apple/ios/KartPadRuntimeOverlayHost.mm").read_text()
         mac = (REPO / "apple/macos/KartPadMacShell.mm").read_text()
         self.assertIn('@"PendingRFL_DB.dat"', manager)
+        self.assertIn('@"PendingPlayerIdentity.plist"', manager)
+        self.assertIn('@"PendingLicenseChange.plist"', manager)
+        self.assertIn('RetroRewind/riivolution/save/RetroWFC/RMCP/rksys.dat', manager)
+        self.assertIn('RetroRewind/riivolution/save/RetroWFC2/RMCP/rksys.dat', manager)
         self.assertIn('NSDataWritingAtomic', manager)
         self.assertIn('@"MiiBackups"', manager)
+        self.assertIn('@"SaveBackups"', manager)
+        self.assertIn('KartPadStagePlayerName', manager)
+        self.assertIn('KartPadStageLicenseRename', manager)
+        self.assertIn('KartPadStageLicenseDeletion', manager)
         self.assertIn('KartPadApplyPendingMiiDatabase(&miiError)', runtime)
         self.assertIn('KartPadApplyPendingMiiDatabase(&miiError)', mac)
 

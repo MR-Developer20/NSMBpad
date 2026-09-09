@@ -6,11 +6,13 @@ import plistlib
 import stat
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 from pathlib import Path
 
 from kartpad_builder.packaging import PackageError, audit_app, package_unsigned_ipa
-from kartpad_builder.pipeline import cache_key, dependency_cache_key
+from kartpad_builder.android_release_contract import render_android_release_contract
+from kartpad_builder.pipeline import build, cache_key, dependency_cache_key
 from kartpad_builder.profiles import Profile, ProfileError, load_profiles, select_profile, validate_profile
 from kartpad_builder.release_header import render_retro_rewind_header
 from kartpad_builder.retro_rewind import (
@@ -97,6 +99,15 @@ class ProfileTests(unittest.TestCase):
             "the visible version and immutable archive URL must advance together",
         )
 
+    def test_android_release_contract_matches_profile(self) -> None:
+        profile = load_profiles(PROFILES)[0]
+        expected = render_android_release_contract(profile.data)
+        generated = (
+            REPO
+            / "android/app/src/main/java/dev/kartpad/android/RetroRewindRelease.java"
+        ).read_text()
+        self.assertEqual(generated, expected)
+
     def test_device_archive_hashing_uses_heap_storage(self) -> None:
         source = (REPO / "apple/ios/KartPadRetroRewindInstaller.mm").read_text()
         self.assertNotIn("uint8_t buffer[1024 * 1024]", source)
@@ -104,6 +115,43 @@ class ProfileTests(unittest.TestCase):
             "NSMutableData *bufferStorage = [NSMutableData dataWithLength:1024 * 1024]",
             source,
         )
+
+    def test_retro_rewind_archive_path_policy_is_shared(self) -> None:
+        installer = (REPO / "apple/ios/KartPadRetroRewindInstaller.mm").read_text()
+        ios_patch = (REPO / "patches/wiicompiled-ios-discio-import.patch").read_text()
+        tvos_patch = (REPO / "patches/wiicompiled-tvos-runtime.patch").read_text()
+        shared_sources = (
+            "runtime/src/retro_rewind/archive_path.cpp",
+            "runtime/src/retro_rewind/archive_scan.cpp",
+        )
+        self.assertIn('"kartpad/retro_rewind/archive_path.h"', installer)
+        self.assertIn('"kartpad/retro_rewind/archive_scan.h"', installer)
+        self.assertIn("ValidateArchiveMemberPath", installer)
+        self.assertIn("ArchiveScan", installer)
+        for shared_source in shared_sources:
+            self.assertIn(shared_source, ios_patch)
+            self.assertIn(shared_source, tvos_patch)
+
+    def test_version_watch_opens_one_actionable_issue(self) -> None:
+        workflow = (REPO / ".github/workflows/retro-rewind-version-watch.yml").read_text()
+        checker = (REPO / "scripts/check-retro-rewind-version.py").read_text()
+        updater = (REPO / "scripts/update-retro-rewind-profile.py").read_text()
+        self.assertIn("issues: write", workflow)
+        self.assertIn("gh issue create", workflow)
+        self.assertIn("update_required", workflow)
+        self.assertIn('parser.add_argument("--json"', checker)
+        self.assertIn("return 2 if update_required else 0", checker)
+        self.assertIn('"--latest"', updater)
+        self.assertIn("-full.zip", updater)
+
+    def test_newer_retro_rewind_message_explains_the_aot_boundary(self) -> None:
+        source = (REPO / "apple/ios/KartPadRuntimeOverlayHost.mm").read_text()
+        method = source.split(
+            "- (void)showKartPadUpdateRequiredForRetroVersion:", 1
+        )[1].split("- (void)checkRetroRewindVersionAndContinue", 1)[0]
+        self.assertIn("translate ahead of time", method)
+        self.assertIn("Original Mario Kart Wii remains available", method)
+        self.assertIn('actionWithTitle:@"View KartPad Releases"', method)
 
     def test_dual_mode_chooser_keeps_a_width_on_wide_ipads(self) -> None:
         source = (REPO / "apple/ios/KartPadRuntimeOverlayHost.mm").read_text()
@@ -121,6 +169,15 @@ class ProfileTests(unittest.TestCase):
 
 
 class RetroRewindTests(unittest.TestCase):
+    def test_translator_accepts_current_kamek_v2_and_legacy_v3(self) -> None:
+        patch = (REPO / "patches/wiicompiled-kamek-v2.patch").read_text()
+        prepare = (REPO / "scripts/prepare-patched-translator.sh").read_text()
+        self.assertIn("MagicV2 = 0x6B000002", patch)
+        self.assertIn("MagicV3 = 0x6B000003", patch)
+        self.assertIn("MagicV2 or MagicV3", patch)
+        self.assertIn("magic1 == MagicV2 && encodedChunkSize == 0", patch)
+        self.assertIn("wiicompiled-kamek-v2.patch", prepare)
+
     def make_archive(self, root: Path, unsafe: bool = False) -> tuple[Path, dict]:
         archive = root / "retro.zip"
         code = b"code-pul-fixture"
@@ -230,18 +287,44 @@ class PackagingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             app = self.make_app(root)
-            notice = root / "RIGHTS_AND_LICENSES.md"
-            notice.write_text("community preview\n")
             first = root / "first.ipa"
             second = root / "second.ipa"
             provenance = {"schemaVersion": 1, "releaseTag": "v0.2.0-preview.2"}
-            entries = {"RIGHTS_AND_LICENSES.md": notice}
+            entries = {
+                name: REPO / name
+                for name in ("LICENSE", "RIGHTS_AND_LICENSES.md", "THIRD_PARTY_NOTICES.md")
+            }
             first_hash = package_unsigned_ipa(app, first, provenance, entries)
             second_hash = package_unsigned_ipa(app, second, provenance, entries)
             self.assertEqual(first_hash, second_hash)
             self.assertEqual(first.read_bytes(), second.read_bytes())
             with zipfile.ZipFile(first) as archive:
-                self.assertEqual(archive.read("RIGHTS_AND_LICENSES.md"), b"community preview\n")
+                for name, source in entries.items():
+                    self.assertEqual(archive.read(name), source.read_bytes())
+                self.assertEqual(archive.read("LICENSE"), (REPO / "LICENSES/GPL-3.0.txt").read_bytes())
+
+    def test_personal_builder_packages_gpl_notices_and_scopes_game_rights(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            app = self.make_app(root)
+            # Reuse a synthetic app; this packaging check needs no game or network inputs.
+            with patch("kartpad_builder.pipeline.prepare_inputs"):
+                result = build(
+                    repo=REPO,
+                    profile=load_profiles(PROFILES)[0],
+                    image=root / "unused.wbfs",
+                    image_sha256="a" * 64,
+                    output=root / "personal.ipa",
+                    work_root=root / "work",
+                    app_override=app,
+                )
+            with zipfile.ZipFile(result.ipa) as archive:
+                for name in ("LICENSE", "RIGHTS_AND_LICENSES.md", "THIRD_PARTY_NOTICES.md"):
+                    self.assertEqual(archive.read(name), (REPO / name).read_bytes())
+                provenance = json.loads(archive.read("KartPadBuilderProvenance.json"))
+                self.assertEqual(provenance["softwareLicense"], "GPL-3.0-only")
+                self.assertEqual(provenance["gameCodeRedistributionRights"], "not-cleared")
+                self.assertNotIn("redistributionAllowed", provenance)
 
     def test_unsafe_additional_entry_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

@@ -7,7 +7,32 @@
 #include <cstdint>
 #include <limits>
 
+#if defined(KARTPAD_ANDROID_COMBINED_FENV)
+// Implemented in a separate translation unit: do not inline across the FP
+// arithmetic whose exception flags are being captured.
+extern "C" int KartPadAndroidCaptureScalarFlags() noexcept;
+extern "C" void KartPadAndroidClearScalarFlags() noexcept;
+#endif
+
 namespace kartpad::semantics {
+
+inline void ClearScalarFlags() noexcept {
+#if defined(KARTPAD_ANDROID_COMBINED_FENV)
+  KartPadAndroidClearScalarFlags();
+#else
+  std::feclearexcept(FE_ALL_EXCEPT);
+#endif
+}
+
+inline int CaptureAndClearScalarFlags() noexcept {
+#if defined(KARTPAD_ANDROID_COMBINED_FENV)
+  return KartPadAndroidCaptureScalarFlags();
+#else
+  const int flags = std::fetestexcept(FE_OVERFLOW | FE_UNDERFLOW | FE_INEXACT);
+  ClearScalarFlags();
+  return flags;
+#endif
+}
 
 struct PpcFlags {
   bool invalid{};
@@ -196,7 +221,7 @@ enum class ScalarFpBinaryOperation { Add, Subtract, Multiply, Divide };
 inline ScalarFpResult EvaluatePpcScalarBinary(
     std::uint32_t fpscr_value, ScalarFpBinaryOperation operation, double a,
     double b, bool single_precision) noexcept {
-  std::feclearexcept(FE_ALL_EXCEPT);
+  ClearScalarFlags();
   volatile double computed = 0.0;
   switch (operation) {
   case ScalarFpBinaryOperation::Add:
@@ -245,14 +270,13 @@ inline ScalarFpResult EvaluatePpcScalarBinary(
     exception |= fpscr::ZX;
   }
 
-  const int host_flags = std::fetestexcept(FE_OVERFLOW | FE_UNDERFLOW | FE_INEXACT);
+  const int host_flags = CaptureAndClearScalarFlags();
   if ((host_flags & FE_OVERFLOW) != 0)
     exception |= fpscr::OX;
   if ((host_flags & FE_UNDERFLOW) != 0)
     exception |= fpscr::UX;
   if ((host_flags & FE_INEXACT) != 0)
     exception |= fpscr::XX;
-  std::feclearexcept(FE_ALL_EXCEPT);
   return FinishScalarFp(fpscr_value, value, exception, single_precision);
 }
 
@@ -270,17 +294,16 @@ inline ScalarFpResult EvaluatePpcSqrt(std::uint32_t fpscr_value, double input,
     fpscr_value &= ~(fpscr::FR | fpscr::FI);
     value = std::bit_cast<double>(0x7ff8000000000000ULL);
   } else {
-    std::feclearexcept(FE_ALL_EXCEPT);
+    ClearScalarFlags();
     volatile double computed = std::sqrt(input);
     value = computed;
-    const int flags = std::fetestexcept(FE_OVERFLOW | FE_UNDERFLOW | FE_INEXACT);
+    const int flags = CaptureAndClearScalarFlags();
     if ((flags & FE_OVERFLOW) != 0)
       exception |= fpscr::OX;
     if ((flags & FE_UNDERFLOW) != 0)
       exception |= fpscr::UX;
     if ((flags & FE_INEXACT) != 0)
       exception |= fpscr::XX;
-    std::feclearexcept(FE_ALL_EXCEPT);
   }
   return FinishScalarFp(fpscr_value, value, exception, single_precision);
 }
@@ -337,7 +360,7 @@ inline ScalarFpResult EvaluatePpcFused(std::uint32_t fpscr_value, double a,
                                        bool single_precision,
                                        bool negate_result) noexcept {
   const double effective_c = single_precision ? Force25Bit(c) : c;
-  std::feclearexcept(FE_ALL_EXCEPT);
+  ClearScalarFlags();
   volatile double computed = std::fma(a, effective_c, subtract ? -b : b);
   double value = computed;
   std::uint32_t exception = 0;
@@ -363,14 +386,13 @@ inline ScalarFpResult EvaluatePpcFused(std::uint32_t fpscr_value, double a,
     value = -value;
   }
 
-  const int flags = std::fetestexcept(FE_OVERFLOW | FE_UNDERFLOW | FE_INEXACT);
+  const int flags = CaptureAndClearScalarFlags();
   if ((flags & FE_OVERFLOW) != 0)
     exception |= fpscr::OX;
   if ((flags & FE_UNDERFLOW) != 0)
     exception |= fpscr::UX;
   if ((flags & FE_INEXACT) != 0)
     exception |= fpscr::XX;
-  std::feclearexcept(FE_ALL_EXCEPT);
   return FinishScalarFp(fpscr_value, value, exception, single_precision);
 }
 
@@ -409,7 +431,7 @@ inline PpcFlags CaptureFlags() noexcept {
 
 template <typename Operation>
 inline Result<double> EvaluateScalar(Operation operation) noexcept {
-  std::feclearexcept(FE_ALL_EXCEPT);
+  ClearScalarFlags();
   volatile double value = operation();
   return {value, CaptureFlags()};
 }

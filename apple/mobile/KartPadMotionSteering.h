@@ -9,6 +9,19 @@ NS_ASSUME_NONNULL_BEGIN
 float KartPadMotionSteeringValue(double angle, double center,
                                  float sensitivity, BOOL inverted) noexcept;
 
+enum class KartPadShakeAction {
+  None,
+  Rearm,
+  Disarm,
+  Trigger,
+};
+
+/* Classifies one gravity-removed acceleration sample. A trigger is edge-based:
+ * another impulse is ignored until motion settles below the rearm threshold. */
+KartPadShakeAction KartPadShakeActionForSample(
+    double accelerationMagnitude, double timestamp, bool armed,
+    double lastTriggerTimestamp) noexcept;
+
 @interface KartPadMotionSteering : NSObject
 
 + (instancetype)sharedSteering;
@@ -16,9 +29,12 @@ float KartPadMotionSteeringValue(double angle, double center,
 @property(nonatomic, assign, getter=isEnabled) BOOL enabled;
 @property(nonatomic, assign, getter=isInverted) BOOL inverted;
 @property(nonatomic, assign) float sensitivity;
+@property(nonatomic, assign, getter=isShakeTricksEnabled)
+    BOOL shakeTricksEnabled;
 @property(nonatomic, readonly, getter=isSensorAvailable) BOOL sensorAvailable;
 @property(nonatomic, readonly) float currentSteering;
 
+- (BOOL)consumeShakeTrick;
 - (void)start;
 - (void)stop;
 - (void)recenter;

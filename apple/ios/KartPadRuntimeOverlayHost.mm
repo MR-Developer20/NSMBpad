@@ -1,16 +1,20 @@
+#import "../mobile/KartPadPrivateServerSettings.h"
 #import "kartpad_mobile_runtime_host.h"
 
 #import "KartPadClassicInput.h"
 #import "KartPadDiscExtractor.h"
 #import "KartPadMenuButton.h"
+#import "KartPadFloatingStick.h"
 #import "KartPadMotionSteering.h"
 #import "KartPadPhysicalControllers.h"
 #import "KartPadRetroRewindInstaller.h"
+#import "KartPadDiagnosticContext.h"
 #import "KartPadMiiManager.h"
 #import "SunPadDiagnostics.h"
 #import "SunPadGameOverlay.h"
 #import "SunPadInputMixer.h"
 #import "SunPadSettings.h"
+#include "audio_backend.h"
 
 #import <SDL3/SDL_properties.h>
 #import <SDL3/SDL_video.h>
@@ -23,15 +27,20 @@
 #include <algorithm>
 #include <cmath>
 
+extern "C" int g_gxFrameCount;
+
 @interface KartPadRuntimeOverlayHost : NSObject <SunPadGameOverlayDelegate,
                                                  UIDocumentPickerDelegate>
 - (instancetype)initWithSDLWindow:(SDL_Window *)window;
 - (void)uninstall;
 - (void)reattachOverlayIfNeeded;
+- (void)runMainMenu;
 @end
 
 @interface KartPadGameOverlay : SunPadGameOverlay
+@property(nonatomic, strong) KartPadFloatingStickView *kartPadMoveStick;
 @property(nonatomic, copy) void (^multiplayerRequested)(void);
+@property(nonatomic, copy) void (^mainMenuRequested)(void);
 @property(nonatomic, copy) void (^motionSteeringRequested)(void);
 @property(nonatomic, copy) void (^miiManagerRequested)(void);
 @property(nonatomic, copy) void (^wiimoteRequested)(void);
@@ -44,6 +53,8 @@
 @property(nonatomic, assign) BOOL kartPadGasInputSelfTestStarted;
 @property(nonatomic, assign) BOOL kartPadModalInputSelfTestStarted;
 @property(nonatomic, assign) BOOL kartPadEditorUITestStarted;
+@property(nonatomic, weak) UIButton *kartPadVisibilityButton;
+@property(nonatomic, copy) NSString *kartPadSelectedControlIdentifier;
 - (void)resetKartPadControlAppearance;
 @end
 
@@ -51,9 +62,16 @@
 // declaration lets the owning subclass replace Sunshine's analog FLUDD
 // pressure semantics with Mario Kart Wii's ordinary digital Classic R button.
 @interface SunPadGameOverlay (KartPadControlHooks)
+- (SunPadStickView *)makeStick;
+- (void)stickChanged:(SunPadStickView *)stick x:(float)x y:(float)y;
 - (void)rPressureChanged:(uint8_t)pressure fullPress:(BOOL)fullPress;
 - (void)clearTouchInput;
 - (void)buttonDown:(UIButton *)button;
+- (void)endLayoutEditing;
+- (void)finishLayoutEditing;
+- (void)refreshMenuButton;
+- (void)buildSettingsPanel;
+- (void)resetLayout;
 - (void)toggleSettingsPanel;
 - (void)selectControlForEditing:(UIView *)control;
 - (void)reportProblem;
@@ -67,8 +85,98 @@ namespace {
 
 KartPadRuntimeOverlayHost *gRuntimeOverlayHost = nil;
 BOOL gKartPadRetroRewindSelected = NO;
+BOOL gKartPadMainMenuRequested = NO;
 NSString *const kKartPadRequestedRuntimeProfileKey =
     @"KartPadRequestedRuntimeProfile";
+NSString *const kKartPadHiddenTouchControlsKey =
+    @"KartPadHiddenTouchControls";
+
+void KartPadSeedTouchLayoutDefaults(BOOL force) {
+  BOOL tablet = UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad;
+  NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+  BOOL changed = NO;
+  if (force || [defaults dictionaryForKey:@"SunPadControlOrigins"] == nil) {
+    // iPad layout accepted by the maintainer on the physical iPad, 2026-09-07.
+    NSDictionary *origins = tablet ? @{
+      @"move": NSStringFromCGPoint(CGPointMake(0.14756954612005857, 0.91391391391391397)),
+      @"c": NSStringFromCGPoint(CGPointMake(0.90377745241581253, 0.87147147147147153)),
+      @"X": NSStringFromCGPoint(CGPointMake(0.1290190336749634, 0.66706706706706709)),
+      @"Y": NSStringFromCGPoint(CGPointMake(0.062562225475841865, 0.6820520520520521)),
+      @"A": NSStringFromCGPoint(CGPointMake(0.90181551976573948, 0.74799799799799804)),
+      @"B": NSStringFromCGPoint(CGPointMake(0.82915080527086371, 0.81399399399399397)),
+      @"R": NSStringFromCGPoint(CGPointMake(0.80767935578330885, 0.72758758758758757)),
+      @"L": NSStringFromCGPoint(CGPointMake(0.91096632503660335, 0.64904904904904903)),
+      @"Z": NSStringFromCGPoint(CGPointMake(0.83304538799414352, 0.65063063063063065)),
+      @"Start": NSStringFromCGPoint(CGPointMake(0.95537335285505121, 0.57607607607607603)),
+    } : @{
+      @"L" : NSStringFromCGPoint(CGPointMake(0.93580568318565682,
+                                               0.42246621616846858)),
+      @"R" : NSStringFromCGPoint(CGPointMake(0.8208055524263117,
+                                               0.5224662162495497)),
+      @"X" : NSStringFromCGPoint(CGPointMake(0.12563888892222205,
+                                               0.53485360360900902)),
+      @"Y" : NSStringFromCGPoint(CGPointMake(0.055472222222222207,
+                                               0.56739864864054057)),
+      @"Z" : NSStringFromCGPoint(CGPointMake(0.84591666666666665,
+                                               0.3783220720432432)),
+    };
+    [defaults setObject:origins forKey:@"SunPadControlOrigins"];
+    changed = YES;
+  }
+  if (force || [defaults objectForKey:kKartPadHiddenTouchControlsKey] == nil) {
+    [defaults setObject:@[@"ExperimentalDPad"] forKey:kKartPadHiddenTouchControlsKey];
+    changed = YES;
+  }
+  if (force || [defaults dictionaryForKey:@"SunPadControlSizeScales"] == nil) {
+    NSDictionary<NSString *, NSNumber *> *scales = tablet ? @{
+      @"A": @1.2150695323944092,
+      @"B": @1.2253857851028442,
+      @"L": @0.9791940450668335,
+      @"R": @0.6000000238418579,
+      @"X": @1.257727861404419,
+      @"Y": @1.3797838687896729,
+      @"Z": @1.2058641910552979,
+    } : @{@"L": @0.9791940450668335, @"R": @0.6000000238418579};
+    [defaults setObject:scales forKey:@"SunPadControlSizeScales"];
+    SunPadSettings *settings = SunPadSettings.sharedSettings;
+    for (NSString *identifier in scales) {
+      [settings setSizeScale:scales[identifier].doubleValue forControl:identifier];
+    }
+    changed = YES;
+  }
+  if (force || [defaults objectForKey:@"SunPadExperimentalDPadOrigin"] == nil) {
+    [defaults setObject:NSStringFromCGPoint(
+        CGPointMake(0.084500001609325415, 0.34521396397747761))
+                 forKey:@"SunPadExperimentalDPadOrigin"];
+    changed = YES;
+  }
+  if (force || [defaults objectForKey:@"SunPadExperimentalDPadScale"] == nil) {
+    [defaults setDouble:0.7827200293540955
+                 forKey:@"SunPadExperimentalDPadScale"];
+    changed = YES;
+  }
+  if (changed) [defaults synchronize];
+}
+
+NSSet<NSString *> *KartPadHiddenTouchControls() {
+  NSArray<NSString *> *saved = [NSUserDefaults.standardUserDefaults
+      stringArrayForKey:kKartPadHiddenTouchControlsKey];
+  return [NSSet setWithArray:saved ?: @[]];
+}
+
+NSString *KartPadVisibilityIdentifier(UIView *control) {
+  NSString *identifier = control.accessibilityIdentifier;
+  if ([identifier hasPrefix:@"D_"]) return @"ExperimentalDPad";
+  return identifier;
+}
+
+BOOL KartPadViewIsEffectivelyHidden(UIView *view) {
+  for (UIView *candidate = view; candidate != nil;
+       candidate = candidate.superview) {
+    if (candidate.hidden || candidate.alpha < 0.01) return YES;
+  }
+  return NO;
+}
 
 UIViewController *KartPadVisibleViewController(UIWindow *window) {
   UIViewController *controller = window.rootViewController;
@@ -559,132 +667,323 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
 
 @interface KartPadFirstLaunchViewController : UIViewController
 @property(nonatomic, copy) void (^modeSelected)(BOOL retroRewind);
-@property(nonatomic, strong) CAGradientLayer *backgroundGradient;
+@property(nonatomic, assign) BOOL resumingGame;
+@property(nonatomic, assign) BOOL currentRetroRewind;
+@property(nonatomic, assign) BOOL gameDataReady;
 @property(nonatomic, strong) NSLayoutConstraint *contentWidthConstraint;
+@property(nonatomic, strong) UIStackView *choices;
+@property(nonatomic, strong) UIStackView *content;
+@property(nonatomic, strong) UIStackView *header;
+@property(nonatomic, strong) NSMutableArray<UILabel *> *cardTitles;
+@property(nonatomic, strong) NSMutableArray<UIView *> *compactDetails;
 @end
 
 @implementation KartPadFirstLaunchViewController
 
+- (UILabel *)label:(NSString *)text style:(UIFontTextStyle)style secondary:(BOOL)secondary {
+  UILabel *label = [UILabel new];
+  label.text = text;
+  label.font = [UIFont preferredFontForTextStyle:style];
+  label.adjustsFontForContentSizeCategory = YES;
+  label.textColor = secondary
+      ? [UIColor colorWithRed:0.70 green:0.75 blue:0.82 alpha:1] : UIColor.whiteColor;
+  label.numberOfLines = 0;
+  return label;
+}
+
+- (UIButton *)link:(NSString *)title symbol:(NSString *)symbol action:(void (^)(void))action {
+  UIButtonConfiguration *configuration = [UIButtonConfiguration plainButtonConfiguration];
+  configuration.title = title;
+  configuration.image = [UIImage systemImageNamed:symbol];
+  configuration.imagePadding = 8;
+  configuration.baseForegroundColor = [UIColor colorWithRed:0.48 green:0.75 blue:1 alpha:1];
+  configuration.contentInsets = NSDirectionalEdgeInsetsMake(12, 0, 12, 12);
+  UIButton *button = [UIButton buttonWithConfiguration:configuration primaryAction:
+      [UIAction actionWithHandler:^(__kindof UIAction *event) { action(); }]];
+  [button.heightAnchor constraintGreaterThanOrEqualToConstant:44].active = YES;
+  return button;
+}
+
+- (void)openGuide:(NSString *)path {
+  NSURL *url = [NSURL URLWithString:[@"https://github.com/chrissotraidis/kartpad/"
+      stringByAppendingString:path]];
+  __weak KartPadFirstLaunchViewController *weakSelf = self;
+  [UIApplication.sharedApplication openURL:url options:@{} completionHandler:^(BOOL opened) {
+    if (opened) return;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Could Not Open GitHub"
+        message:@"Please try again when a browser is available. Setup and troubleshooting guides are in the chrissotraidis/kartpad repository on GitHub."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+    [weakSelf presentViewController:alert animated:YES completion:nil];
+  }];
+}
+
+- (void)closeSetupHelp {
+  [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)showSetupHelp {
+  UIViewController *help = [UIViewController new];
+  help.title = @"Getting Started";
+  help.view.backgroundColor = self.view.backgroundColor;
+  help.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
+      initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(closeSetupHelp)];
+  UILabel *importTitle = [self label:@"1. Import Mario Kart Wii" style:UIFontTextStyleTitle2 secondary:NO];
+  UILabel *importBody = [self label:
+      @"Use your own PAL (Europe) ISO or WBFS: RMCP01, revision 0. An extracted DATA folder also works. RVZ files must be converted before importing."
+      style:UIFontTextStyleBody secondary:YES];
+  UILabel *retroTitle = [self label:@"2. Add Retro Rewind, if you want it" style:UIFontTextStyleTitle2 secondary:NO];
+  UILabel *retroBody = [self label:[NSString stringWithFormat:
+      @"Import Mario Kart Wii first, then choose Retro Rewind. KartPad can download and install the official %@ pack. You do not need to import a second disc.",
+      KartPadRetroRewindInstaller.requiredVersion] style:UIFontTextStyleBody secondary:YES];
+  UILabel *supportTitle = [self label:@"Stuck on a step?" style:UIFontTextStyleTitle2 secondary:NO];
+  UILabel *supportBody = [self label:
+      @"The GitHub guides cover supported files, free space, installation and common problems. If you report an issue, include your KartPad version, device, and the exact message you see."
+      style:UIFontTextStyleBody secondary:YES];
+  for (UILabel *title in @[importTitle, retroTitle, supportTitle]) title.accessibilityTraits |= UIAccessibilityTraitHeader;
+  __weak KartPadFirstLaunchViewController *weakSelf = self;
+  UIButton *setup = [self link:@"Setup Guide on GitHub" symbol:@"book.closed" action:^{
+    [weakSelf openGuide:@"blob/main/docs/INSTALL_IPA.md"];
+  }];
+  UIButton *troubleshooting = [self link:@"Troubleshooting on GitHub" symbol:@"wrench.and.screwdriver" action:^{
+    [weakSelf openGuide:@"blob/main/docs/SUPPORT.md"];
+  }];
+  UILabel *version = [self label:[NSString stringWithFormat:@"KartPad %@ · Build %@",
+      [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"",
+      [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"] ?: @""]
+      style:UIFontTextStyleCaption1 secondary:YES];
+  UIStackView *content = [[UIStackView alloc] initWithArrangedSubviews:
+      @[importTitle, importBody, retroTitle, retroBody, supportTitle, supportBody, setup, troubleshooting, version]];
+  content.axis = UILayoutConstraintAxisVertical;
+  content.spacing = 12;
+  [content setCustomSpacing:28 afterView:importBody];
+  [content setCustomSpacing:28 afterView:retroBody];
+  content.translatesAutoresizingMaskIntoConstraints = NO;
+  UIScrollView *scroll = [UIScrollView new];
+  scroll.translatesAutoresizingMaskIntoConstraints = NO;
+  [help.view addSubview:scroll];
+  [scroll addSubview:content];
+  [NSLayoutConstraint activateConstraints:@[
+    [scroll.leadingAnchor constraintEqualToAnchor:help.view.safeAreaLayoutGuide.leadingAnchor],
+    [scroll.trailingAnchor constraintEqualToAnchor:help.view.safeAreaLayoutGuide.trailingAnchor],
+    [scroll.topAnchor constraintEqualToAnchor:help.view.safeAreaLayoutGuide.topAnchor],
+    [scroll.bottomAnchor constraintEqualToAnchor:help.view.safeAreaLayoutGuide.bottomAnchor],
+    [content.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor constant:24],
+    [content.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor constant:-24],
+    [content.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor constant:24],
+    [content.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor constant:-24],
+    [content.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor constant:-48],
+  ]];
+  UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:help];
+  navigation.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+  navigation.modalPresentationStyle = UIModalPresentationFormSheet;
+  navigation.preferredContentSize = CGSizeMake(620, 640);
+  [self presentViewController:navigation animated:YES completion:nil];
+}
+
+- (UIView *)gameCard:(BOOL)retro installedVersion:(NSString *)installedVersion {
+  BOOL current = self.resumingGame && self.currentRetroRewind == retro;
+  BOOL ready = self.gameDataReady && (!retro || installedVersion.length > 0);
+  UIColor *accent = retro ? [UIColor colorWithRed:0.77 green:0.67 blue:1 alpha:1]
+                          : [UIColor colorWithRed:0.43 green:0.73 blue:1 alpha:1];
+  NSString *status = current ? @"CURRENT GAME · PAUSED"
+      : (self.resumingGame ? @"NEXT LAUNCH"
+      : (ready ? @"READY TO PLAY" : (retro && !self.gameDataReady ? @"BASE GAME REQUIRED" : @"SETUP NEEDED")));
+  UILabel *badge = [self label:status style:UIFontTextStyleCaption1 secondary:NO];
+  badge.textColor = accent;
+  badge.font = [UIFontMetrics.defaultMetrics scaledFontForFont:
+      [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold]];
+  UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:
+      retro ? @"gobackward" : @"flag.checkered"]];
+  icon.tintColor = accent;
+  icon.contentMode = UIViewContentModeScaleAspectFit;
+  icon.isAccessibilityElement = NO;
+  [NSLayoutConstraint activateConstraints:@[
+    [icon.widthAnchor constraintEqualToConstant:32], [icon.heightAnchor constraintEqualToConstant:32],
+  ]];
+  UIView *spacer = [UIView new];
+  UIStackView *top = [[UIStackView alloc] initWithArrangedSubviews:@[icon, spacer, badge]];
+  top.axis = UILayoutConstraintAxisHorizontal;
+  top.alignment = UIStackViewAlignmentCenter;
+  top.spacing = 12;
+  UILabel *title = [self label:retro ? @"Retro Rewind" : @"Mario Kart Wii"
+      style:UIFontTextStyleTitle1 secondary:NO];
+  title.accessibilityTraits |= UIAccessibilityTraitHeader;
+  [self.cardTitles addObject:title];
+  NSString *detail = retro ? @"More tracks, characters and Retro WFC online play. Uses your Mario Kart Wii game data."
+                           : @"Grand Prix, time trials and local races. Your original game, on this device.";
+  UILabel *description = [self label:detail style:UIFontTextStyleBody secondary:YES];
+  NSString *note = retro ? (installedVersion.length > 0
+      ? [NSString stringWithFormat:@"Installed pack · %@", installedVersion]
+      : [NSString stringWithFormat:@"Official pack · %@ · downloaded in the app", KartPadRetroRewindInstaller.requiredVersion])
+      : (self.gameDataReady ? @"Game data imported" : @"PAL (Europe) · ISO / WBFS · RMCP01 rev 0");
+  UILabel *metadata = [self label:note style:UIFontTextStyleFootnote secondary:YES];
+  [self.compactDetails addObjectsFromArray:@[description, metadata]];
+  NSString *actionTitle = current ? @"Resume Game" : (self.resumingGame ? @"Use on Next Launch"
+      : (ready ? @"Play Game" : (retro ? @"Set Up Game" : @"Import Game")));
+  UIButtonConfiguration *configuration = [UIButtonConfiguration filledButtonConfiguration];
+  configuration.title = actionTitle;
+  configuration.image = [UIImage systemImageNamed:current || ready ? @"play.fill" : @"arrow.right"];
+  configuration.imagePlacement = NSDirectionalRectEdgeTrailing;
+  configuration.imagePadding = 10;
+  configuration.baseBackgroundColor = current || (!self.resumingGame && !retro)
+      ? [UIColor colorWithRed:0.16 green:0.47 blue:0.88 alpha:1]
+      : [UIColor colorWithRed:0.19 green:0.23 blue:0.31 alpha:1];
+  configuration.baseForegroundColor = UIColor.whiteColor;
+  configuration.cornerStyle = UIButtonConfigurationCornerStyleMedium;
+  configuration.contentInsets = NSDirectionalEdgeInsetsMake(14, 18, 14, 18);
+  __weak KartPadFirstLaunchViewController *weakSelf = self;
+  UIButton *action = [UIButton buttonWithConfiguration:configuration primaryAction:
+      [UIAction actionWithHandler:^(__kindof UIAction *event) {
+    if (weakSelf.modeSelected != nil) weakSelf.modeSelected(retro);
+  }]];
+  action.accessibilityIdentifier = retro ? @"kartpad.mode.retro-rewind" : @"kartpad.mode.original";
+  action.accessibilityLabel = [actionTitle containsString:title.text] ? actionTitle
+      : [NSString stringWithFormat:@"%@, %@", actionTitle, title.text];
+  action.accessibilityHint = status;
+  [action.heightAnchor constraintGreaterThanOrEqualToConstant:50].active = YES;
+  UIView *gap = [UIView new];
+  UIStackView *content = [[UIStackView alloc] initWithArrangedSubviews:
+      @[top, title, description, metadata, gap, action]];
+  content.axis = UILayoutConstraintAxisVertical;
+  content.spacing = 12;
+  [content setCustomSpacing:18 afterView:top];
+  content.translatesAutoresizingMaskIntoConstraints = NO;
+  UIView *card = [UIView new];
+  card.backgroundColor = [UIColor colorWithRed:0.075 green:0.10 blue:0.15 alpha:1];
+  card.layer.cornerRadius = 20;
+  card.layer.borderWidth = 1;
+  card.layer.borderColor = [UIColor colorWithRed:0.17 green:0.21 blue:0.28 alpha:1].CGColor;
+  [card addSubview:content];
+  [NSLayoutConstraint activateConstraints:@[
+    [content.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:24],
+    [content.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-24],
+    [content.topAnchor constraintEqualToAnchor:card.topAnchor constant:24],
+    [content.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-24],
+    [gap.heightAnchor constraintGreaterThanOrEqualToConstant:0],
+  ]];
+  return card;
+}
+
 - (void)viewDidLoad {
   [super viewDidLoad];
-  self.view.backgroundColor = UIColor.blackColor;
-  CAGradientLayer *gradient = [CAGradientLayer layer];
-  gradient.colors = @[
-    (__bridge id)[UIColor colorWithRed:0.025 green:0.075 blue:0.15 alpha:1.0].CGColor,
-    (__bridge id)[UIColor colorWithRed:0.10 green:0.055 blue:0.18 alpha:1.0].CGColor,
-    (__bridge id)[UIColor colorWithRed:0.18 green:0.045 blue:0.08 alpha:1.0].CGColor,
-  ];
-  gradient.startPoint = CGPointMake(0.0, 0.0);
-  gradient.endPoint = CGPointMake(1.0, 1.0);
-  [self.view.layer insertSublayer:gradient atIndex:0];
-  self.backgroundGradient = gradient;
-
-  UIImage *markImage = [UIImage systemImageNamed:@"steeringwheel"] ?:
-      [UIImage systemImageNamed:@"flag.checkered"];
-  UIImageView *mark = [[UIImageView alloc] initWithImage:markImage];
-  mark.translatesAutoresizingMaskIntoConstraints = NO;
+  self.compactDetails = [NSMutableArray array];
+  self.cardTitles = [NSMutableArray array];
+  self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+  self.view.backgroundColor = [UIColor colorWithRed:0.035 green:0.05 blue:0.08 alpha:1];
+  UIImageView *mark = [[UIImageView alloc] initWithImage:[UIImage imageNamed:@"KartPadLogo"]];
   mark.contentMode = UIViewContentModeScaleAspectFit;
-  mark.tintColor = [UIColor colorWithRed:1.0 green:0.42 blue:0.18 alpha:1.0];
-  mark.accessibilityLabel = @"KartPad";
+  mark.isAccessibilityElement = NO;
   [NSLayoutConstraint activateConstraints:@[
-    [mark.widthAnchor constraintEqualToConstant:48.0],
-    [mark.heightAnchor constraintEqualToConstant:48.0],
+    [mark.widthAnchor constraintEqualToConstant:48], [mark.heightAnchor constraintEqualToConstant:48],
   ]];
+  UILabel *brand = [self label:@"KartPad" style:UIFontTextStyleTitle1 secondary:NO];
+  brand.font = [UIFontMetrics.defaultMetrics scaledFontForFont:
+      [UIFont systemFontOfSize:30 weight:UIFontWeightBold]];
+  UILabel *platform = [self label:@"Mario Kart Wii, on your device."
+      style:UIFontTextStyleSubheadline secondary:YES];
+  UIStackView *brandText = [[UIStackView alloc] initWithArrangedSubviews:@[brand, platform]];
+  brandText.axis = UILayoutConstraintAxisVertical;
+  brandText.spacing = 4;
+  __weak KartPadFirstLaunchViewController *weakSelf = self;
+  UIButton *help = [self link:@"Help" symbol:@"questionmark.circle" action:^{ [weakSelf showSetupHelp]; }];
+  help.accessibilityIdentifier = @"kartpad.setup.help";
+  [help setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+  UIStackView *header = [[UIStackView alloc] initWithArrangedSubviews:@[mark, brandText, help]];
+  header.axis = UILayoutConstraintAxisHorizontal;
+  header.alignment = UIStackViewAlignmentCenter;
+  header.spacing = 16;
+  self.header = header;
+  [self.compactDetails addObject:platform];
 
-  UILabel *title = [[UILabel alloc] init];
-  title.translatesAutoresizingMaskIntoConstraints = NO;
-  title.text = @"KartPad";
-  title.font = [UIFont systemFontOfSize:34.0 weight:UIFontWeightBold];
-  title.textAlignment = NSTextAlignmentCenter;
-  title.textColor = UIColor.whiteColor;
+  UILabel *heading = [self label:self.resumingGame ? @"Back to the race" : @"Choose a game"
+      style:UIFontTextStyleLargeTitle secondary:NO];
+  heading.accessibilityTraits |= UIAccessibilityTraitHeader;
+  UILabel *intro = [self label:self.resumingGame
+      ? @"Your game is paused. Resume now, or choose a game for the next launch."
+      : (self.gameDataReady ? @"Your Mario Kart Wii game data is ready."
+                           : @"Start by importing Mario Kart Wii. Add Retro Rewind whenever you're ready.")
+      style:UIFontTextStyleBody secondary:YES];
+  [self.compactDetails addObjectsFromArray:@[heading, intro]];
+  NSString *version = KartPadRetroRewindInstaller.installedVersion;
+  self.choices = [[UIStackView alloc] initWithArrangedSubviews:
+      @[[self gameCard:NO installedVersion:version], [self gameCard:YES installedVersion:version]]];
+  self.choices.axis = UILayoutConstraintAxisHorizontal;
+  self.choices.spacing = 20;
+  self.choices.distribution = UIStackViewDistributionFillEqually;
 
-  UILabel *tagline = [[UILabel alloc] init];
-  tagline.translatesAutoresizingMaskIntoConstraints = NO;
-  tagline.text = @"Choose your way to race";
-  tagline.font = [UIFont systemFontOfSize:20.0 weight:UIFontWeightSemibold];
-  tagline.textColor = [UIColor colorWithWhite:1.0 alpha:0.88];
-  tagline.textAlignment = NSTextAlignmentCenter;
-
-  UILabel *message = [[UILabel alloc] init];
-  message.translatesAutoresizingMaskIntoConstraints = NO;
-  message.text = @"Your own RMCP01 disc image or extracted game data is required before play.";
-  message.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
-  message.textColor = [UIColor colorWithWhite:1.0 alpha:0.62];
-  message.textAlignment = NSTextAlignmentCenter;
-  message.numberOfLines = 0;
-
-  UIButtonConfiguration *originalConfiguration =
-      [UIButtonConfiguration filledButtonConfiguration];
-  originalConfiguration.title = @"Mario Kart Wii";
-  originalConfiguration.subtitle = @"Original game";
-  originalConfiguration.image = [UIImage systemImageNamed:@"flag.checkered"];
-  originalConfiguration.imagePadding = 12.0;
-  originalConfiguration.baseBackgroundColor =
-      [UIColor colorWithRed:0.03 green:0.49 blue:1.0 alpha:1.0];
-  originalConfiguration.baseForegroundColor = UIColor.whiteColor;
-  originalConfiguration.cornerStyle = UIButtonConfigurationCornerStyleLarge;
-  originalConfiguration.contentInsets = NSDirectionalEdgeInsetsMake(24, 28, 24, 28);
-  UIButton *original = [UIButton buttonWithConfiguration:originalConfiguration
-                                           primaryAction:[UIAction actionWithHandler:^(__kindof UIAction *action) {
-    (void)action;
-    if (self.modeSelected != nil) self.modeSelected(NO);
-  }]];
-  original.accessibilityIdentifier = @"kartpad.mode.original";
-
-  UIButtonConfiguration *retroConfiguration =
-      [UIButtonConfiguration filledButtonConfiguration];
-  retroConfiguration.title = @"Retro Rewind";
-  NSString *installedVersion = KartPadRetroRewindInstaller.installedVersion;
-  retroConfiguration.subtitle = installedVersion.length > 0
-      ? [NSString stringWithFormat:@"Installed %@ • Extra content + Retro WFC",
-                                   installedVersion]
-      : [NSString stringWithFormat:@"Download %@ • Extra content + Retro WFC",
-                                   KartPadRetroRewindInstaller.requiredVersion];
-  retroConfiguration.image = [UIImage systemImageNamed:@"gobackward"];
-  retroConfiguration.imagePadding = 12.0;
-  retroConfiguration.baseBackgroundColor =
-      [UIColor colorWithRed:0.96 green:0.22 blue:0.39 alpha:1.0];
-  retroConfiguration.baseForegroundColor = UIColor.whiteColor;
-  retroConfiguration.cornerStyle = UIButtonConfigurationCornerStyleLarge;
-  retroConfiguration.contentInsets = NSDirectionalEdgeInsetsMake(24, 28, 24, 28);
-  UIButton *retro = [UIButton buttonWithConfiguration:retroConfiguration
-                                        primaryAction:[UIAction actionWithHandler:^(__kindof UIAction *action) {
-    (void)action;
-    if (self.modeSelected != nil) self.modeSelected(YES);
-  }]];
-  retro.accessibilityIdentifier = @"kartpad.mode.retro-rewind";
-
-  UIStackView *choices = [[UIStackView alloc] initWithArrangedSubviews:@[original, retro]];
-  choices.axis = UILayoutConstraintAxisHorizontal;
-  choices.spacing = 18.0;
-  choices.distribution = UIStackViewDistributionFillEqually;
-
-  UIStackView *stack =
-      [[UIStackView alloc] initWithArrangedSubviews:
-          @[mark, title, tagline, message, choices]];
-  stack.translatesAutoresizingMaskIntoConstraints = NO;
-  stack.axis = UILayoutConstraintAxisVertical;
-  stack.spacing = 12.0;
-  [stack setCustomSpacing:24.0 afterView:message];
-  [self.view addSubview:stack];
-  self.contentWidthConstraint =
-      [stack.widthAnchor constraintEqualToConstant:320.0];
+  UILabel *supportTitle = [self label:@"A little help getting started"
+      style:UIFontTextStyleHeadline secondary:NO];
+  UILabel *supportText = [self label:@"File formats, importing your game, and adding Retro Rewind — explained step by step."
+      style:UIFontTextStyleSubheadline secondary:YES];
+  UIButton *setup = [self link:@"Setup guide" symbol:@"book.closed" action:^{
+    [weakSelf openGuide:@"blob/main/docs/INSTALL_IPA.md"];
+  }];
+  UIButton *troubleshooting = [self link:@"Troubleshooting" symbol:@"wrench.and.screwdriver" action:^{
+    [weakSelf openGuide:@"blob/main/docs/SUPPORT.md"];
+  }];
+  UIStackView *links = [[UIStackView alloc] initWithArrangedSubviews:@[setup, troubleshooting]];
+  links.axis = UILayoutConstraintAxisHorizontal;
+  links.alignment = UIStackViewAlignmentLeading;
+  links.distribution = UIStackViewDistributionFillEqually;
+  links.spacing = 12;
+  UILabel *footer = [self label:[NSString stringWithFormat:@"KartPad %@ · Build %@   /   Guides open on GitHub",
+      [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"",
+      [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"] ?: @""]
+      style:UIFontTextStyleCaption1 secondary:YES];
+  UIStackView *content = [[UIStackView alloc] initWithArrangedSubviews:
+      @[header, heading, intro, self.choices, supportTitle, supportText, links, footer]];
+  content.translatesAutoresizingMaskIntoConstraints = NO;
+  content.axis = UILayoutConstraintAxisVertical;
+  self.content = content;
+  [self.compactDetails addObjectsFromArray:@[supportTitle, supportText, links, footer]];
+  content.spacing = 10;
+  [content setCustomSpacing:30 afterView:header];
+  [content setCustomSpacing:22 afterView:intro];
+  [content setCustomSpacing:28 afterView:self.choices];
+  UIScrollView *scroll = [UIScrollView new];
+  scroll.translatesAutoresizingMaskIntoConstraints = NO;
+  [self.view addSubview:scroll];
+  UIView *canvas = [UIView new];
+  canvas.translatesAutoresizingMaskIntoConstraints = NO;
+  [scroll addSubview:canvas];
+  [canvas addSubview:content];
+  self.contentWidthConstraint = [content.widthAnchor constraintEqualToConstant:880];
+  NSLayoutConstraint *height = [canvas.heightAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.heightAnchor];
+  height.priority = UILayoutPriorityDefaultLow;
   [NSLayoutConstraint activateConstraints:@[
-    [stack.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
-    [stack.centerYAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.centerYAnchor
-                                        constant:-18.0],
-    self.contentWidthConstraint,
+    [scroll.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor],
+    [scroll.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor],
+    [scroll.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
+    [scroll.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor],
+    [canvas.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor],
+    [canvas.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor],
+    [canvas.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor],
+    [canvas.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor],
+    [canvas.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor],
+    [canvas.heightAnchor constraintGreaterThanOrEqualToAnchor:scroll.frameLayoutGuide.heightAnchor],
+    [content.centerXAnchor constraintEqualToAnchor:canvas.centerXAnchor],
+    [content.centerYAnchor constraintEqualToAnchor:canvas.centerYAnchor],
+    [content.topAnchor constraintGreaterThanOrEqualToAnchor:canvas.topAnchor constant:16],
+    [content.bottomAnchor constraintLessThanOrEqualToAnchor:canvas.bottomAnchor constant:-16],
+    self.contentWidthConstraint, height,
   ]];
 }
 
 - (void)viewDidLayoutSubviews {
   [super viewDidLayoutSubviews];
-  self.backgroundGradient.frame = self.view.bounds;
   const UIEdgeInsets insets = self.view.safeAreaInsets;
-  const CGFloat availableWidth = CGRectGetWidth(self.view.bounds) -
-      insets.left - insets.right - 64.0;
-  self.contentWidthConstraint.constant =
-      MIN(760.0, MAX(320.0, availableWidth));
+  const CGFloat available = CGRectGetWidth(self.view.bounds) - insets.left - insets.right - 48;
+  self.contentWidthConstraint.constant = MIN(920, MAX(0, available));
+  BOOL accessibilityText = UIContentSizeCategoryIsAccessibilityCategory(self.traitCollection.preferredContentSizeCategory);
+  BOOL compact = CGRectGetHeight(self.view.bounds) - insets.top - insets.bottom < 500 && !accessibilityText;
+  self.choices.axis = (!compact && available < 660) || accessibilityText
+      ? UILayoutConstraintAxisVertical : UILayoutConstraintAxisHorizontal;
+  [self.content setCustomSpacing:compact ? 12 : 30 afterView:self.header];
+  for (UILabel *title in self.cardTitles) {
+    title.font = [UIFont preferredFontForTextStyle:compact ? UIFontTextStyleTitle2 : UIFontTextStyleTitle1];
+  }
+  for (UIView *detail in self.compactDetails) detail.hidden = compact;
 }
 
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations {
@@ -779,13 +1078,13 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
 
 - (void)showKartPadUpdateRequiredForRetroVersion:(NSString *)latest {
   NSString *message = [NSString stringWithFormat:
-      @"Retro Rewind %@ is current, but this KartPad build supports %@. KartPad precompiles Retro Rewind's code, so update KartPad before installing the newer pack or playing online.",
+      @"Retro Rewind %@ was released after this KartPad build, which supports %@. Retro Rewind changed executable code that KartPad must translate ahead of time, so a matching KartPad release is required before installing the new pack or playing online. Original Mario Kart Wii remains available.",
       latest, KartPadRetroRewindInstaller.requiredVersion];
   UIAlertController *alert = [UIAlertController
-      alertControllerWithTitle:@"KartPad Update Required"
+      alertControllerWithTitle:@"Retro Rewind Update Needed"
                        message:message
                 preferredStyle:UIAlertControllerStyleAlert];
-  [alert addAction:[UIAlertAction actionWithTitle:@"Check KartPad Releases"
+  [alert addAction:[UIAlertAction actionWithTitle:@"View KartPad Releases"
                                              style:UIAlertActionStyleDefault
                                            handler:^(UIAlertAction *action) {
     (void)action;
@@ -1106,35 +1405,8 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
   NSError *error = nil;
   NSArray<NSURL *> *roots = KartPadGameDataRootsInDocuments(&error);
   if (roots.count == 0) {
-    UIAlertController *alert = [UIAlertController
-        alertControllerWithTitle:@"KartPad Folder"
-                         message:KartPadDocumentsFolderScanDetail(error)
-                  preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Choose from Files…"
-                                                style:UIAlertActionStyleDefault
-                                              handler:^(UIAlertAction *action) {
-      (void)action;
-      dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                   (int64_t)(0.35 * NSEC_PER_SEC)),
-                     dispatch_get_main_queue(), ^{ [self presentGameDataPicker]; });
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Try Again"
-                                                style:UIAlertActionStyleDefault
-                                              handler:^(UIAlertAction *action) {
-      (void)action;
-      dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                   (int64_t)(0.35 * NSEC_PER_SEC)),
-                     dispatch_get_main_queue(), ^{ [self chooseDocumentsRoot]; });
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Back"
-                                                style:UIAlertActionStyleCancel
-                                              handler:^(UIAlertAction *action) {
-      (void)action;
-      dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                   (int64_t)(0.35 * NSEC_PER_SEC)),
-                     dispatch_get_main_queue(), ^{ [self showOptions]; });
-    }]];
-    [self.root presentViewController:alert animated:YES completion:nil];
+    NSLog(@"[KartPad] %@", KartPadDocumentsFolderScanDetail(error));
+    [self presentGameDataPicker];
     return;
   }
   if (roots.count == 1) {
@@ -1183,7 +1455,7 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
   self.choosingGameDataCopy = NO;
   UIAlertController *options =
       [UIAlertController alertControllerWithTitle:@"Game Data Required"
-          message:@"KartPad does not include Mario Kart Wii. Import your own RMCP01 WBFS, ISO, or extracted DATA folder to continue."
+          message:@"First, import your own Mario Kart Wii game: PAL (Europe), RMCP01 revision 0.\n\nChoose an ISO, WBFS, or extracted DATA folder. RVZ files must be converted first. Retro Rewind is added after this step."
           preferredStyle:UIAlertControllerStyleAlert];
   [options addAction:[UIAlertAction actionWithTitle:@"Choose WBFS, ISO, or DATA Folder…"
                                                style:UIAlertActionStyleDefault
@@ -1195,7 +1467,7 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
       [self presentGameDataPicker];
     });
   }]];
-  [options addAction:[UIAlertAction actionWithTitle:@"Import from KartPad Folder"
+  [options addAction:[UIAlertAction actionWithTitle:@"Import from This Installation's Folder..."
                                                style:UIAlertActionStyleDefault
                                              handler:^(UIAlertAction *action) {
     (void)action;
@@ -1295,6 +1567,7 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
     return NO;
   }
   self.root = [[KartPadFirstLaunchViewController alloc] init];
+  self.root.gameDataReady = gameDataReady;
   self.window = [[UIWindow alloc] initWithWindowScene:scene];
   self.window.windowLevel = UIWindowLevelAlert + 1.0;
   self.window.rootViewController = self.root;
@@ -1312,12 +1585,15 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
   };
   NSString *requestedProfile = [NSUserDefaults.standardUserDefaults
       stringForKey:kKartPadRequestedRuntimeProfileKey];
-  if ([requestedProfile isEqualToString:@"retro_rewind"]) {
+  if ([requestedProfile isEqualToString:@"retro_rewind"] ||
+      [requestedProfile isEqualToString:@"base"]) {
     [NSUserDefaults.standardUserDefaults
         removeObjectForKey:kKartPadRequestedRuntimeProfileKey];
     [NSUserDefaults.standardUserDefaults synchronize];
     dispatch_async(dispatch_get_main_queue(), ^{
-      if (self.root.modeSelected != nil) self.root.modeSelected(YES);
+      if (self.root.modeSelected != nil) {
+        self.root.modeSelected([requestedProfile isEqualToString:@"retro_rewind"]);
+      }
     });
   }
   if (removalError != nil) {
@@ -1344,6 +1620,159 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
 
 @implementation KartPadGameOverlay
 
+- (instancetype)initWithFrame:(CGRect)frame {
+  // Seed untouched layouts only; custom arrangements remain user-owned.
+  KartPadSeedTouchLayoutDefaults(NO);
+  return [super initWithFrame:frame];
+}
+
+- (SunPadStickView *)makeStick {
+  if (self.kartPadMoveStick != nil) return [super makeStick];
+  KartPadFloatingStickView *stick = [[KartPadFloatingStickView alloc]
+      initWithFrame:CGRectMake(0, 0, 128, 128)];
+  self.kartPadMoveStick = stick;
+  __weak KartPadGameOverlay *weakSelf = self;
+  __weak SunPadStickView *weakStick = stick;
+  stick.valueChanged = ^(float x, float y) {
+    SunPadStickView *strongStick = weakStick;
+    if (strongStick != nil) [weakSelf stickChanged:strongStick x:x y:y];
+  };
+  return stick;
+}
+
+- (void)kartPadFinishLayoutEditing {
+  [super finishLayoutEditing];
+  [self toggleSettingsPanel];
+}
+
+- (void)endLayoutEditing {
+  [super endLayoutEditing];
+  self.kartPadSelectedControlIdentifier = nil;
+}
+
+- (void)kartPadToggleSelectedControlVisibility {
+  NSString *identifier = self.kartPadSelectedControlIdentifier;
+  if (identifier.length == 0) return;
+
+  NSMutableSet<NSString *> *hidden =
+      [KartPadHiddenTouchControls() mutableCopy];
+  BOOL showing = [hidden containsObject:identifier];
+  if (showing) {
+    [hidden removeObject:identifier];
+  } else {
+    [hidden addObject:identifier];
+  }
+  NSArray<NSString *> *saved =
+      [[hidden allObjects] sortedArrayUsingSelector:@selector(compare:)];
+  [NSUserDefaults.standardUserDefaults setObject:saved
+                                           forKey:kKartPadHiddenTouchControlsKey];
+  [NSUserDefaults.standardUserDefaults synchronize];
+  if (showing) {
+    for (UIView *control in self.subviews) {
+      if (![KartPadVisibilityIdentifier(control) isEqualToString:identifier]) {
+        continue;
+      }
+      control.hidden = NO;
+      control.userInteractionEnabled = YES;
+      control.alpha = 1.0;
+    }
+  }
+  [self setNeedsLayout];
+  [self layoutIfNeeded];
+}
+
+- (void)buildSettingsPanel {
+  [super buildSettingsPanel];
+  // Resolution belongs in Display. Remove the inherited duplicate row while
+  // retaining the pinned SunPad implementation and the user's saved scale.
+  UIView *resolution = KartPadSubviewWithAccessibilityLabel(
+      self, @"Render resolution", UISegmentedControl.class);
+  UIView *row = resolution.superview;
+  if ([row.superview isKindOfClass:UIStackView.class]) {
+    [(UIStackView *)row.superview removeArrangedSubview:row];
+    [row removeFromSuperview];
+  }
+}
+
+- (void)kartPadConfigureTouchLayoutEditor {
+  UIButton *done = (UIButton *)KartPadSubviewWithAccessibilityLabel(
+      self, @"Finish moving touch controls", UIButton.class);
+  if (done == nil) return;
+
+  [done setTitle:@"Back" forState:UIControlStateNormal];
+  done.accessibilityHint = @"Saves the layout and returns to touch control settings.";
+  [done removeTarget:self action:@selector(finishLayoutEditing)
+     forControlEvents:UIControlEventTouchUpInside];
+  [done removeTarget:self action:@selector(kartPadFinishLayoutEditing)
+     forControlEvents:UIControlEventTouchUpInside];
+  [done addTarget:self action:@selector(kartPadFinishLayoutEditing)
+   forControlEvents:UIControlEventTouchUpInside];
+
+  UIStackView *stack = [done.superview isKindOfClass:UIStackView.class]
+      ? (UIStackView *)done.superview : nil;
+  if (self.kartPadVisibilityButton == nil && stack != nil) {
+    UIButton *visibility = [UIButton buttonWithType:UIButtonTypeSystem];
+    [visibility setTitle:@"Hide" forState:UIControlStateNormal];
+    [visibility setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    visibility.titleLabel.font =
+        [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold];
+    visibility.backgroundColor = [UIColor colorWithWhite:0.18 alpha:0.96];
+    visibility.layer.cornerRadius = 10.0;
+    visibility.accessibilityLabel = @"Hide selected touch control";
+    visibility.enabled = NO;
+    [visibility addTarget:self
+                   action:@selector(kartPadToggleSelectedControlVisibility)
+         forControlEvents:UIControlEventTouchUpInside];
+    [stack insertArrangedSubview:visibility
+                         atIndex:MAX((NSInteger)stack.arrangedSubviews.count - 1,
+                                     0)];
+    [visibility.widthAnchor constraintEqualToConstant:68.0].active = YES;
+    [visibility.heightAnchor constraintEqualToConstant:40.0].active = YES;
+    self.kartPadVisibilityButton = visibility;
+  }
+
+  NSSet<NSString *> *hidden = KartPadHiddenTouchControls();
+  BOOL editing = !KartPadViewIsEffectivelyHidden(done);
+  for (UIView *control in self.subviews) {
+    NSString *identifier = KartPadVisibilityIdentifier(control);
+    if (identifier.length == 0 || ![hidden containsObject:identifier]) continue;
+    control.hidden = !editing;
+    control.userInteractionEnabled = editing;
+    if (editing) control.alpha = 0.35;
+  }
+
+  NSString *selected = self.kartPadSelectedControlIdentifier;
+  BOOL selectedHidden = selected.length > 0 && [hidden containsObject:selected];
+  [self.kartPadVisibilityButton
+      setTitle:selectedHidden ? @"Show" : @"Hide"
+      forState:UIControlStateNormal];
+  self.kartPadVisibilityButton.accessibilityLabel = selectedHidden
+      ? @"Show selected touch control" : @"Hide selected touch control";
+  self.kartPadVisibilityButton.enabled = selected.length > 0;
+}
+
+- (void)selectControlForEditing:(UIView *)control {
+  [super selectControlForEditing:control];
+  self.kartPadSelectedControlIdentifier =
+      KartPadVisibilityIdentifier(control);
+  [self kartPadConfigureTouchLayoutEditor];
+}
+
+- (void)resetLayout {
+  [super resetLayout];
+  [NSUserDefaults.standardUserDefaults
+      removeObjectForKey:kKartPadHiddenTouchControlsKey];
+  KartPadSeedTouchLayoutDefaults(YES);
+  for (UIView *control in self.subviews) {
+    if (KartPadVisibilityIdentifier(control).length == 0) continue;
+    control.hidden = NO;
+    control.userInteractionEnabled = YES;
+    control.alpha = 1.0;
+  }
+  self.kartPadSelectedControlIdentifier = nil;
+  [self setNeedsLayout];
+}
+
 - (void)toggleSettingsPanel {
   // Opening or closing a touch-modal must never leave a gameplay control held.
   // Keep this in KartPad's owner layer so the pinned SunPad snapshot remains
@@ -1361,8 +1790,19 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
   [super setTouchControlsHidden:hidden animated:animated];
 }
 
+- (void)refreshMenuButton {
+  // SunPad rebuilds its source menu after any inherited setting changes. Run
+  // the KartPad rewrite immediately so that refreshes cannot expose the
+  // Sunshine-specific title or performance switches on either device idiom.
+  [super refreshMenuButton];
+  [self setNeedsLayout];
+  [self layoutIfNeeded];
+}
+
 - (void)layoutSubviews {
   [super layoutSubviews];
+  self.kartPadMoveStick.floatingEnabled =
+      ![SunPadSettings sharedSettings].editingControlLayout;
   UIButton *menuButton = nil;
   UIButton *leftShoulder = nil;
   UIButton *rightShoulder = nil;
@@ -1562,6 +2002,8 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
 #endif
   }
 
+  [self kartPadConfigureTouchLayoutEditor];
+
   UIMenu *sourceMenu = menuButton.menu;
   if (sourceMenu == nil ||
       [sourceMenu.identifier isEqualToString:@"dev.kartpad.menu"]) {
@@ -1653,7 +2095,7 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
             [dataElement.title isEqualToString:@"Import from SunPad Folder"]) {
           UIAction *sourceAction = (UIAction *)dataElement;
           UIAction *replacement =
-              [UIAction actionWithTitle:@"Import from KartPad Folder"
+              [UIAction actionWithTitle:@"Import from This Installation's Folder..."
                                   image:sourceAction.image
                              identifier:sourceAction.identifier
                                 handler:^(__kindof UIAction *action) {
@@ -1669,7 +2111,7 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
         }
       }
       UIAction *miiManager =
-          [UIAction actionWithTitle:@"Manage Miis…"
+          [UIAction actionWithTitle:@"Player Identity…"
                               image:[UIImage systemImageNamed:@"person.crop.circle.badge.plus"]
                          identifier:@"dev.kartpad.manage-miis"
                             handler:^(__kindof UIAction *action) {
@@ -1678,9 +2120,9 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
           weakSelf.miiManagerRequested();
         }
       }];
-      [dataItems addObject:miiManager];
+      [dataItems insertObject:miiManager atIndex:0];
       gameData = [UIMenu menuWithTitle:dataMenu.title
-                                 image:dataMenu.image
+                                 image:[UIImage systemImageNamed:@"externaldrive"]
                             identifier:dataMenu.identifier
                                options:dataMenu.options
                               children:dataItems];
@@ -1711,6 +2153,11 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
                    children:displayItems];
 
   NSMutableArray<UIMenuElement *> *children = [NSMutableArray array];
+  [children addObject:[UIAction actionWithTitle:@"Return to KartPad Menu"
+      image:[UIImage systemImageNamed:@"house"] identifier:@"dev.kartpad.main-menu"
+      handler:^(__kindof UIAction *action) {
+    if (weakSelf.mainMenuRequested) weakSelf.mainMenuRequested();
+  }]];
   [children addObject:multiplayer];
   if (fpsCounter != nil) [children addObject:fpsCounter];
   [children addObject:controls];
@@ -1727,9 +2174,12 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
 - (void)reportProblem {
   UIViewController *presenter = KartPadVisibleViewController(self.window);
   if (presenter == nil) return;
+  NSString *instructions =
+      @"Describe the problem. KartPad adds device details and recent logs.\n\n"
+       "Attach the log and relevant screenshots. GitHub reports are public; review before posting.";
   UIAlertController *prompt =
       [UIAlertController alertControllerWithTitle:@"Report a Problem"
-                                          message:@"Answer briefly and KartPad will add the technical details. If the problem is visual, take a screenshot first and attach it with the report on GitHub. The report never includes your game image, extracted files, saves, signing material, or controller inputs. GitHub reports and attachments are public."
+                                          message:instructions
                                    preferredStyle:UIAlertControllerStyleAlert];
   [prompt addTextFieldWithConfigurationHandler:^(UITextField *field) {
     field.placeholder = @"What went wrong?";
@@ -1809,7 +2259,26 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
   }
 
   if (openGitHub) {
-    [self openGitHubReportWithID:reportID answers:answers];
+    NSString *localDevice = self.traitCollection.userInterfaceIdiom == UIUserInterfaceIdiomPad
+        ? @"On My iPad" : @"On My iPhone";
+    NSString *steps = [NSString stringWithFormat:
+        @"Your diagnostic log is saved.\n\n"
+         "1. Review the prefilled GitHub report.\n\n"
+         "2. Attach %@ from Files → %@ → KartPad → Diagnostics.\n\n"
+         "3. Add a screenshot for visual issues.\n\n"
+         "The log is not uploaded automatically. Game files, saves, signing material and controller inputs are excluded.",
+        reportURL.lastPathComponent, localDevice];
+    UIAlertController *attachmentHelp = [UIAlertController
+        alertControllerWithTitle:@"Attach Your Diagnostic Log"
+                         message:steps preferredStyle:UIAlertControllerStyleAlert];
+    [attachmentHelp addAction:[UIAlertAction actionWithTitle:@"Cancel"
+        style:UIAlertActionStyleCancel handler:nil]];
+    __weak KartPadGameOverlay *weakSelf = self;
+    [attachmentHelp addAction:[UIAlertAction actionWithTitle:@"Open GitHub"
+        style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+      [weakSelf openGitHubReportWithID:reportID answers:answers];
+    }]];
+    [presenter presentViewController:attachmentHelp animated:YES completion:nil];
     return;
   }
 
@@ -1853,6 +2322,10 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
     [NSURLQueryItem queryItemWithName:@"summary" value:answers[@"problem"]],
     [NSURLQueryItem queryItemWithName:@"context" value:answers[@"context"]],
     [NSURLQueryItem queryItemWithName:@"frequency" value:answers[@"frequency"]],
+    [NSURLQueryItem queryItemWithName:@"diagnostics" value:
+        @"Attach the diagnostic .log file from Files → KartPad → Diagnostics here. "
+         "Review it before posting and add a screenshot for visual issues. "
+         "The report ID above does not upload the log."],
   ];
   NSURL *url = components.URL;
   if (url == nil) return;
@@ -1982,6 +2455,9 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
   overlay.multiplayerRequested = ^{
     [weakSelf showMultiplayerAccess];
   };
+  overlay.mainMenuRequested = ^{
+    gKartPadMainMenuRequested = YES;
+  };
   overlay.motionSteeringRequested = ^{
     [weakSelf showMotionSteering];
   };
@@ -2010,6 +2486,10 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
                      selector:@selector(applicationDidBecomeActive:)
                          name:UIApplicationDidBecomeActiveNotification
                        object:nil];
+  [notifications addObserver:self
+                     selector:@selector(userDidTakeScreenshot:)
+                         name:UIApplicationUserDidTakeScreenshotNotification
+                       object:nil];
   SunPadDiagnosticsStart();
   NSLog(@"[KartPad] exact SunPad runtime overlay installed");
   return self;
@@ -2036,6 +2516,25 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
   _overlay.alpha = 1.0;
   [container bringSubviewToFront:_overlay];
   [_overlay setNeedsLayout];
+  [_overlay layoutIfNeeded];
+  UIButton *menuButton = KartPadFindMenuButton(_overlay);
+  KartPadConfigureMenuButton(menuButton);
+  menuButton.selected = NO;
+  menuButton.highlighted = NO;
+  menuButton.hidden = NO;
+  menuButton.alpha = 1.0;
+}
+
+- (void)userDidTakeScreenshot:(NSNotification *)notification {
+  (void)notification;
+  // The screenshot notification arrives after capture. Reassert the app-owned
+  // overlay immediately and once more on the next run-loop pass so UIKit's
+  // transient screenshot/menu state cannot leave the persistent button hidden.
+  [self reattachOverlayIfNeeded];
+  __weak KartPadRuntimeOverlayHost *weakSelf = self;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [weakSelf reattachOverlayIfNeeded];
+  });
 }
 
 - (void)showMotionSteering {
@@ -2045,8 +2544,9 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
   KartPadMotionSteering *motion = [KartPadMotionSteering sharedSteering];
   NSString *status = motion.sensorAvailable
       ? [NSString stringWithFormat:
-            @"Tilt the device like a steering wheel. Current state: %@. Sensitivity: %.1fx. Physical controllers take priority.",
-            motion.enabled ? @"On" : @"Off", motion.sensitivity]
+            @"Tilt steering: %@. Shake tricks/wheelies: %@. Sensitivity: %.1fx. Physical controllers take priority.",
+            motion.enabled ? @"On" : @"Off",
+            motion.shakeTricksEnabled ? @"On" : @"Off", motion.sensitivity]
       : @"Motion data is unavailable on this device or Simulator. Touch and physical-controller steering remain available.";
   UIAlertController *sheet =
       [UIAlertController alertControllerWithTitle:@"Motion Steering"
@@ -2077,6 +2577,15 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
       motion.inverted = !motion.inverted;
     }]];
     [sheet addAction:[UIAlertAction
+        actionWithTitle:motion.shakeTricksEnabled
+            ? @"Disable Shake Tricks/Wheelies"
+            : @"Enable Shake Tricks/Wheelies"
+                    style:UIAlertActionStyleDefault
+                  handler:^(UIAlertAction *action) {
+      (void)action;
+      motion.shakeTricksEnabled = !motion.shakeTricksEnabled;
+    }]];
+    [sheet addAction:[UIAlertAction
         actionWithTitle:@"Cycle Sensitivity"
                     style:UIAlertActionStyleDefault
                   handler:^(UIAlertAction *action) {
@@ -2095,40 +2604,167 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
   [controller presentViewController:sheet animated:YES completion:nil];
 }
 
+// UIAlertAction handlers run before UIKit finishes dismissing their alert.
+// Present the next screen only after that transition completes.
+- (void)presentOverlayAlert:(UIAlertController *)alert {
+  UIPopoverPresentationController *popover = alert.popoverPresentationController;
+  popover.sourceView = _overlay;
+  popover.sourceRect = CGRectMake(CGRectGetMidX(_overlay.bounds),
+      CGRectGetMidY(_overlay.bounds), 1, 1);
+  dispatch_async(dispatch_get_main_queue(), ^{
+    UIViewController *presenter = KartPadVisibleViewController(self->_window);
+    if (presenter == nil) return;
+    void (^present)(void) = ^{
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [KartPadVisibleViewController(self->_window)
+            presentViewController:alert animated:YES completion:nil];
+      });
+    };
+    if ([presenter isKindOfClass:UIAlertController.class]) {
+      if (presenter.isBeingDismissed && presenter.transitionCoordinator) {
+        [presenter.transitionCoordinator animateAlongsideTransition:nil
+            completion:^(id<UIViewControllerTransitionCoordinatorContext> context) { present(); }];
+      } else {
+        [presenter dismissViewControllerAnimated:YES completion:present];
+      }
+    } else {
+      present();
+    }
+  });
+}
+
+- (void)showMultiplayerMessage:(NSString *)title message:(NSString *)message {
+  UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
+      message:message preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction actionWithTitle:@"Done" style:UIAlertActionStyleCancel handler:nil]];
+  [self presentOverlayAlert:alert];
+}
+
+- (void)runMainMenu {
+  // Called by the guest's event pump, after the menu action has returned.
+  // This keeps the current guest stack suspended while UIKit stays responsive.
+  gKartPadMainMenuRequested = NO;
+  [(KartPadGameOverlay *)_overlay resetKartPadControlAppearance];
+  [[SunPadInputMixer sharedMixer] clearInputFromTouch:YES];
+  [[KartPadMotionSteering sharedSteering] stop];
+  AudioBackend::Instance().SetPausedForHost(true);
+  __block BOOL finished = NO;
+  KartPadFirstLaunchViewController *root = [[KartPadFirstLaunchViewController alloc] init];
+  root.resumingGame = YES;
+  root.gameDataReady = YES;
+  root.currentRetroRewind = gKartPadRetroRewindSelected;
+  UIWindow *home = [[UIWindow alloc] initWithWindowScene:_window.windowScene];
+  home.windowLevel = UIWindowLevelAlert + 1;
+  home.rootViewController = root;
+  __weak KartPadFirstLaunchViewController *weakRoot = root;
+  root.modeSelected = ^(BOOL retroRewind) {
+    if (retroRewind == gKartPadRetroRewindSelected) {
+      finished = YES;
+      return;
+    }
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Switch on Next Launch"
+        message:@"Close KartPad from the app switcher and reopen it to start the other game. Your saved progress and control layout are kept. Unsaved race progress is not carried over."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Use on Next Launch"
+        style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+      [NSUserDefaults.standardUserDefaults setObject:retroRewind ? @"retro_rewind" : @"base"
+          forKey:kKartPadRequestedRuntimeProfileKey];
+      [NSUserDefaults.standardUserDefaults synchronize];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [weakRoot presentViewController:alert animated:YES completion:nil];
+  };
+  [home makeKeyAndVisible];
+  const int pausedFrame = g_gxFrameCount;
+  NSLog(@"[KartPad] main menu opened; current game suspended at frame %d", pausedFrame);
+  while (!finished) {
+    @autoreleasepool {
+      [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode
+          beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
+    }
+  }
+  home.hidden = YES;
+  root.modeSelected = nil;
+  [_window makeKeyAndVisible];
+  [[SunPadInputMixer sharedMixer] clearInputFromTouch:YES];
+  for (NSUInteger player = 0; player < 4; ++player) {
+    SunPadInputState ignored{};
+    [[KartPadPhysicalControllers sharedControllers] consumePlayer:player state:&ignored];
+  }
+  [[KartPadMotionSteering sharedSteering] start];
+  AudioBackend::Instance().SetPausedForHost(false);
+  NSLog(@"[KartPad] current game resumed from main menu; frame %d -> %d", pausedFrame, g_gxFrameCount);
+}
+
+- (void)showPrivateServerSettings {
+  UIViewController *controller = KartPadVisibleViewController(_window);
+  if (controller == nil) return;
+  UIAlertController *editor = [UIAlertController alertControllerWithTitle:@"Private Wii Server"
+      message:@"Experimental Wii server (unencrypted), not another iPad's address. Restart to apply; blank restores default."
+      preferredStyle:UIAlertControllerStyleAlert];
+  [editor addTextFieldWithConfigurationHandler:^(UITextField *field) {
+    field.placeholder = @"Server hostname or IPv4 address";
+    field.text = KartPadPrivateServerHost();
+    field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    field.autocorrectionType = UITextAutocorrectionTypeNo;
+    field.keyboardType = UIKeyboardTypeURL;
+    field.accessibilityLabel = @"Private Wii server address";
+  }];
+  __weak KartPadRuntimeOverlayHost *weakSelf = self;
+  [editor addAction:[UIAlertAction actionWithTitle:@"Save"
+      style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+    NSString *host = [editor.textFields.firstObject.text
+        stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (host.length == 0) {
+      [NSUserDefaults.standardUserDefaults removeObjectForKey:@"KartPadPrivateWfcHost"];
+      [weakSelf showMultiplayerMessage:@"Default Service Selected"
+          message:@"Fully close and reopen KartPad to restore the default online service. Original Mario Kart Wii's original service is closed; Retro Rewind uses Retro WFC."];
+      return;
+    }
+    if (!KartPad::Network::ValidPrivateWfcHost(host.UTF8String ?: "")) {
+      [weakSelf showMultiplayerMessage:@"Invalid Server Address"
+          message:@"Enter a hostname or IPv4 address only, without a URL scheme, path, port, or spaces."];
+      return;
+    }
+    [NSUserDefaults.standardUserDefaults setObject:host forKey:@"KartPadPrivateWfcHost"];
+    [weakSelf showMultiplayerMessage:@"Private Server Saved"
+        message:@"Fully close and reopen KartPad to apply this experimental override. A compatible server must already be running. This does not create a room or restore vanilla Nintendo WFC; server login and races remain unverified."];
+  }]];
+  [editor addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+  [self presentOverlayAlert:editor];
+}
+
 - (void)showMultiplayerAccess {
   [[SunPadInputMixer sharedMixer] clearInputFromTouch:YES];
   UIViewController *controller = KartPadVisibleViewController(_window);
-  if (controller == nil) {
-    return;
-  }
-  NSString *message = gKartPadRetroRewindSelected
-      ? @"Retro Rewind is active. Choose Nintendo WFC in the game for Retro WFC online play."
-      : @"Online multiplayer is available only through Retro Rewind. The original Mario Kart Wii online service is no longer available.";
-  UIAlertController *sheet =
-      [UIAlertController alertControllerWithTitle:@"Multiplayer"
-                                          message:message
-                                   preferredStyle:UIAlertControllerStyleAlert];
-  if (!gKartPadRetroRewindSelected) {
-    __weak KartPadRuntimeOverlayHost *weakSelf = self;
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Switch to Retro Rewind"
-                                              style:UIAlertActionStyleDefault
-                                            handler:^(UIAlertAction *action) {
-      (void)action;
-      [NSUserDefaults.standardUserDefaults
-          setObject:@"retro_rewind" forKey:kKartPadRequestedRuntimeProfileKey];
-      [NSUserDefaults.standardUserDefaults synchronize];
-      dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                   (int64_t)(0.35 * NSEC_PER_SEC)),
-                     dispatch_get_main_queue(), ^{
-        [weakSelf showIntegrationAlert:@"Retro Rewind Selected"
-                               message:@"Close and reopen KartPad. It will go directly to Retro Rewind setup or launch the installed pack."];
-      });
+  if (controller == nil) return;
+  NSString *profile = gKartPadRetroRewindSelected ? @"Retro Rewind" : @"Mario Kart Wii";
+  NSString *server = KartPadPrivateServerHost();
+  NSString *message = [NSString stringWithFormat:@"%@\n%@", profile,
+      !gKartPadRetroRewindSelected
+          ? @"Local split-screen available. Original Nintendo WFC is closed; private online rooms are not available in this build."
+          : (server.length ? @"Experimental server override configured; restart after changes."
+              : @"Online: Retro WFC.")];
+  UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Multiplayer"
+      message:message preferredStyle:UIAlertControllerStyleAlert];
+  __weak KartPadRuntimeOverlayHost *weakSelf = self;
+  [sheet addAction:[UIAlertAction actionWithTitle:@"Local Players & Controllers…"
+      style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+    [weakSelf gameOverlayRequestsControllerMapping:nil];
+  }]];
+  if (gKartPadRetroRewindSelected) {
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Retro WFC Friend Rooms…"
+        style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+      [weakSelf showMultiplayerMessage:@"Retro WFC Friend Rooms"
+          message:@"Retro Rewind uses Retro WFC. Connect there in the game, then open Friends and exchange friend codes with players using the same Retro Rewind version. The host creates a room; friends join from their roster.\n\nThis is Retro Rewind's in-game service. A custom server override may prevent connection. Native KartPad host/join rooms are not implemented yet."];
     }]];
   }
-  [sheet addAction:[UIAlertAction actionWithTitle:@"Back"
-                                            style:UIAlertActionStyleCancel
-                                          handler:nil]];
-  [controller presentViewController:sheet animated:YES completion:nil];
+  [sheet addAction:[UIAlertAction actionWithTitle:@"Experimental Server Settings…"
+      style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+    [weakSelf showPrivateServerSettings];
+  }]];
+  [sheet addAction:[UIAlertAction actionWithTitle:@"Back" style:UIAlertActionStyleCancel handler:nil]];
+  [self presentOverlayAlert:sheet];
 }
 
 - (void)uninstall {
@@ -2168,11 +2804,6 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
 
 - (void)showIntegrationAlert:(NSString *)title message:(NSString *)message {
   [[SunPadInputMixer sharedMixer] clearInputFromTouch:YES];
-  UIWindow *window = _window;
-  UIViewController *controller = KartPadVisibleViewController(window);
-  if (controller == nil) {
-    return;
-  }
   UIAlertController *alert =
       [UIAlertController alertControllerWithTitle:title
                                           message:message
@@ -2180,7 +2811,7 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
   [alert addAction:[UIAlertAction actionWithTitle:@"OK"
                                             style:UIAlertActionStyleDefault
                                           handler:nil]];
-  [controller presentViewController:alert animated:YES completion:nil];
+  [self presentOverlayAlert:alert];
 }
 
 - (void)showExperimentalWiimoteInfo {
@@ -2202,13 +2833,262 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
 }
 
 - (void)showMiiCreationHelp {
-  [self showIntegrationAlert:@"Create a Mii"
-                     message:@"KartPad does not include the Wii Menu or Mii Channel, so it cannot create a new Mii yet. Create or export a standard 74-byte .mii file with a compatible tool, then choose Import Mii… here. After restarting KartPad, use Mario Kart Wii's License Settings → Change Mii screen to select it."];
+  [self showIntegrationAlert:@"Mii Appearance"
+                     message:@"KartPad can set the online player name for its built-in Mii. To change the face or other appearance details, import a standard 74-byte .mii file made with a compatible tool. Player Identity can then rename it and update every linked Mario Kart Wii license."];
+}
+
+- (void)showPlayerNameEditorForRecord:(NSDictionary<NSString *, id> *)record {
+  UIViewController *controller = KartPadVisibleViewController(_window);
+  if (controller == nil) return;
+  NSString *currentName = record[@"name"] ?: @"";
+  NSUInteger slot = [record[@"slot"] unsignedIntegerValue];
+  UIAlertController *editor = [UIAlertController
+      alertControllerWithTitle:@"Edit Mii Name"
+                       message:@"Use 1–10 characters. Fully close and reopen KartPad to update this Mii and its linked licenses, keeping friend codes and progress. To create a license, choose New inside the game and select this Mii."
+                preferredStyle:UIAlertControllerStyleAlert];
+  [editor addTextFieldWithConfigurationHandler:^(UITextField *field) {
+    field.text = currentName;
+    field.placeholder = @"Player name";
+    field.clearButtonMode = UITextFieldViewModeWhileEditing;
+    field.autocapitalizationType = UITextAutocapitalizationTypeWords;
+    field.returnKeyType = UIReturnKeyDone;
+  }];
+  __weak KartPadRuntimeOverlayHost *weakSelf = self;
+  [editor addAction:[UIAlertAction actionWithTitle:@"Save"
+                                             style:UIAlertActionStyleDefault
+                                           handler:^(UIAlertAction *action) {
+    (void)action;
+    NSString *name = editor.textFields.firstObject.text ?: @"";
+    NSError *renameError = nil;
+    NSUInteger updatedLicenses = 0;
+    if (!KartPadStagePlayerName(slot, name, &updatedLicenses, &renameError)) {
+      [weakSelf showIntegrationAlert:@"Mii Name Could Not Be Changed"
+                             message:renameError.localizedDescription];
+      return;
+    }
+    NSString *trimmed = [name stringByTrimmingCharactersInSet:
+        NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    NSString *licenseDetail = updatedLicenses == 0
+        ? @"To create a license with this name, choose New inside the game and select this Mii."
+        : [NSString stringWithFormat:@"%lu linked license%@ will also be updated.",
+            (unsigned long)updatedLicenses,
+            updatedLicenses == 1 ? @"" : @"s"];
+    [weakSelf showIntegrationAlert:@"Mii Name Scheduled"
+                           message:[NSString stringWithFormat:
+        @"Fully close KartPad from the app switcher and reopen it to apply %@. Returning to the KartPad menu and resuming does not apply pending edits. %@ A backup will be kept automatically.",
+        trimmed, licenseDetail]];
+  }]];
+  [editor addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                             style:UIAlertActionStyleCancel
+                                           handler:nil]];
+  [controller presentViewController:editor animated:YES completion:nil];
+}
+
+- (void)showPlayerNameChoices {
+  NSError *error = nil;
+  NSArray<NSDictionary<NSString *, id> *> *records = KartPadMiiRecords(&error);
+  if (error != nil) {
+    [self showIntegrationAlert:@"Player Identity Could Not Be Read"
+                       message:error.localizedDescription];
+    return;
+  }
+  if (records.count == 1) {
+    [self showPlayerNameEditorForRecord:records.firstObject];
+    return;
+  }
+  UIViewController *controller = KartPadVisibleViewController(_window);
+  if (controller == nil) return;
+  UIAlertController *choices = [UIAlertController
+      alertControllerWithTitle:@"Choose a Mii"
+                       message:@"Choose which identity to rename. Every license linked to it will be updated."
+                preferredStyle:UIAlertControllerStyleActionSheet];
+  __weak KartPadRuntimeOverlayHost *weakSelf = self;
+  for (NSDictionary<NSString *, id> *record in records) {
+    [choices addAction:[UIAlertAction actionWithTitle:record[@"name"]
+                                                style:UIAlertActionStyleDefault
+                                              handler:^(UIAlertAction *action) {
+      (void)action;
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                   (int64_t)(0.35 * NSEC_PER_SEC)),
+                     dispatch_get_main_queue(), ^{
+        [weakSelf showPlayerNameEditorForRecord:record];
+      });
+    }]];
+  }
+  [choices addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+  choices.popoverPresentationController.sourceView = _overlay;
+  choices.popoverPresentationController.sourceRect = CGRectMake(
+      CGRectGetMidX(_overlay.bounds), CGRectGetMidY(_overlay.bounds), 1.0, 1.0);
+  [controller presentViewController:choices animated:YES completion:nil];
+}
+
+- (NSString *)licenseTitleForRecord:(NSDictionary<NSString *, id> *)record {
+  NSString *pending = record[@"pendingOperation"];
+  NSString *suffix = [pending isEqualToString:@"delete"] ? @" · deletion pending" :
+      [pending isEqualToString:@"rename"] ? @" · name pending" : @"";
+  return [NSString stringWithFormat:@"%@ · Slot %lu · %@%@",
+      record[@"profileTitle"] ?: @"Mario Kart Wii",
+      (unsigned long)([record[@"slot"] unsignedIntegerValue] + 1),
+      record[@"name"] ?: @"Unnamed", suffix];
+}
+
+- (void)showLicenseNameEditorForRecord:(NSDictionary<NSString *, id> *)record {
+  UIViewController *controller = KartPadVisibleViewController(_window);
+  if (controller == nil) return;
+  UIAlertController *editor = [UIAlertController
+      alertControllerWithTitle:@"Rename Existing License"
+                       message:[NSString stringWithFormat:
+          @"%@\n\nUse 1–10 characters. The selected license keeps its friend code, online account, records, and progress.",
+          [self licenseTitleForRecord:record]]
+                preferredStyle:UIAlertControllerStyleAlert];
+  [editor addTextFieldWithConfigurationHandler:^(UITextField *field) {
+    field.text = record[@"name"] ?: @"";
+    field.placeholder = @"License name";
+    field.clearButtonMode = UITextFieldViewModeWhileEditing;
+    field.autocapitalizationType = UITextAutocapitalizationTypeWords;
+    field.returnKeyType = UIReturnKeyDone;
+  }];
+  __weak KartPadRuntimeOverlayHost *weakSelf = self;
+  [editor addAction:[UIAlertAction actionWithTitle:@"Save"
+                                             style:UIAlertActionStyleDefault
+                                           handler:^(UIAlertAction *action) {
+    (void)action;
+    NSError *renameError = nil;
+    if (!KartPadStageLicenseRename(record[@"profileIdentifier"],
+            [record[@"slot"] unsignedIntegerValue], record[@"createId"],
+            editor.textFields.firstObject.text ?: @"", &renameError)) {
+      [weakSelf showIntegrationAlert:@"License Could Not Be Renamed"
+                             message:renameError.localizedDescription];
+      return;
+    }
+    [weakSelf showIntegrationAlert:@"License Rename Scheduled"
+                           message:@"Fully close KartPad from the app switcher and reopen it to apply the rename. Returning to the KartPad menu and resuming does not apply pending edits. The live save and matching Mii are backed up automatically."];
+  }]];
+  [editor addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                             style:UIAlertActionStyleCancel
+                                           handler:nil]];
+  [controller presentViewController:editor animated:YES completion:nil];
+}
+
+- (void)confirmLicenseDeletionForRecord:(NSDictionary<NSString *, id> *)record {
+  UIViewController *controller = KartPadVisibleViewController(_window);
+  if (controller == nil) return;
+  NSString *name = record[@"name"] ?: @"Unnamed";
+  UIAlertController *confirm = [UIAlertController
+      alertControllerWithTitle:[NSString stringWithFormat:
+          @"Delete “%@” from %@ Slot %lu?", name,
+          record[@"profileTitle"] ?: @"Mario Kart Wii",
+          (unsigned long)([record[@"slot"] unsignedIntegerValue] + 1)]
+                       message:@"This permanently removes that license’s friend code, online account data, records, and progress. Its Mii appearance remains available. KartPad creates a save backup first."
+                preferredStyle:UIAlertControllerStyleAlert];
+  [confirm addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+  __weak KartPadRuntimeOverlayHost *weakSelf = self;
+  [confirm addAction:[UIAlertAction actionWithTitle:@"Delete License"
+                                              style:UIAlertActionStyleDestructive
+                                            handler:^(UIAlertAction *action) {
+    (void)action;
+    NSError *deleteError = nil;
+    if (!KartPadStageLicenseDeletion(record[@"profileIdentifier"],
+            [record[@"slot"] unsignedIntegerValue], record[@"createId"],
+            &deleteError)) {
+      [weakSelf showIntegrationAlert:@"License Could Not Be Deleted"
+                             message:deleteError.localizedDescription];
+      return;
+    }
+    [weakSelf showIntegrationAlert:@"License Deletion Scheduled"
+                           message:@"Fully close KartPad from the app switcher and reopen it to apply the deletion. Returning to the KartPad menu and resuming does not apply pending edits. Other licenses stay in their current slots. The live save is backed up automatically."];
+  }]];
+  [controller presentViewController:confirm animated:YES completion:nil];
+}
+
+- (void)showLicenseActionsForRecord:(NSDictionary<NSString *, id> *)record {
+  UIViewController *controller = KartPadVisibleViewController(_window);
+  if (controller == nil) return;
+  UIAlertController *actions = [UIAlertController
+      alertControllerWithTitle:[self licenseTitleForRecord:record]
+                       message:@"Fully close KartPad from the app switcher and reopen it to apply changes. Returning to the KartPad menu and resuming does not apply pending edits. Rename keeps this license’s account and progress. Delete removes only this slot; other licenses stay in place."
+                preferredStyle:UIAlertControllerStyleActionSheet];
+  __weak KartPadRuntimeOverlayHost *weakSelf = self;
+  [actions addAction:[UIAlertAction actionWithTitle:@"Rename License…"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *action) {
+    (void)action;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(0.35 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+      [weakSelf showLicenseNameEditorForRecord:record];
+    });
+  }]];
+  [actions addAction:[UIAlertAction actionWithTitle:@"Delete License…"
+                                              style:UIAlertActionStyleDestructive
+                                            handler:^(UIAlertAction *action) {
+    (void)action;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(0.35 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+      [weakSelf confirmLicenseDeletionForRecord:record];
+    });
+  }]];
+  [actions addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+  actions.popoverPresentationController.sourceView = _overlay;
+  actions.popoverPresentationController.sourceRect = CGRectMake(
+      CGRectGetMidX(_overlay.bounds), CGRectGetMidY(_overlay.bounds), 1.0, 1.0);
+  [controller presentViewController:actions animated:YES completion:nil];
+}
+
+- (void)showLicenseChoices {
+  NSError *error = nil;
+  NSArray<NSDictionary<NSString *, id> *> *records = KartPadLicenseRecords(&error);
+  if (error != nil) {
+    [self showIntegrationAlert:@"Licenses Could Not Be Read"
+                       message:error.localizedDescription];
+    return;
+  }
+  if (records.count == 0) {
+    [self showIntegrationAlert:@"No Existing Licenses"
+                       message:@"Choose New on the license screen inside Mario Kart Wii or Retro Rewind, then select your Mii. Return here to rename or delete that license. Edit Mii Name changes your identity; it does not create a game license."];
+    return;
+  }
+  UIViewController *controller = KartPadVisibleViewController(_window);
+  if (controller == nil) return;
+  UIAlertController *choices = [UIAlertController
+      alertControllerWithTitle:@"Rename or Delete Licenses"
+                       message:@"Choose the exact game profile and slot. A license with an established friend code should be renamed, not deleted."
+                preferredStyle:UIAlertControllerStyleActionSheet];
+  __weak KartPadRuntimeOverlayHost *weakSelf = self;
+  for (NSDictionary<NSString *, id> *record in records) {
+    [choices addAction:[UIAlertAction
+        actionWithTitle:[self licenseTitleForRecord:record]
+                    style:UIAlertActionStyleDefault
+                  handler:^(UIAlertAction *action) {
+      (void)action;
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                   (int64_t)(0.35 * NSEC_PER_SEC)),
+                     dispatch_get_main_queue(), ^{
+        [weakSelf showLicenseActionsForRecord:record];
+      });
+    }]];
+  }
+  [choices addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+  choices.popoverPresentationController.sourceView = _overlay;
+  choices.popoverPresentationController.sourceRect = CGRectMake(
+      CGRectGetMidX(_overlay.bounds), CGRectGetMidY(_overlay.bounds), 1.0, 1.0);
+  [controller presentViewController:choices animated:YES completion:nil];
 }
 
 - (void)showMiiRemovalChoices {
   NSError *error = nil;
   NSArray<NSDictionary<NSString *, id> *> *records = KartPadMiiRecords(&error);
+  NSArray<NSDictionary<NSString *, id> *> *licenses =
+      error == nil ? KartPadLicenseRecords(&error) : @[];
   if (error != nil) {
     [self showIntegrationAlert:@"Miis Could Not Be Read"
                        message:error.localizedDescription];
@@ -2217,17 +3097,33 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
   UIViewController *controller = KartPadVisibleViewController(_window);
   if (controller == nil) return;
   UIAlertController *choices = [UIAlertController
-      alertControllerWithTitle:@"Remove a Mii"
-                       message:@"Removal is staged safely and takes effect the next time KartPad launches. At least one Mii is always retained."
+      alertControllerWithTitle:@"Remove Mii Appearance"
+                       message:@"This removes only an unused Mii appearance; it does not delete a Mario Kart license. Miis linked to a license must be changed or removed from Rename or Delete Licenses first."
                 preferredStyle:UIAlertControllerStyleActionSheet];
   __weak KartPadRuntimeOverlayHost *weakSelf = self;
   for (NSDictionary<NSString *, id> *record in records) {
-    NSString *title = record[@"name"];
+    NSUInteger linkedLicenses = 0;
+    for (NSDictionary<NSString *, id> *license in licenses) {
+      if ([license[@"createId"] isEqualToData:record[@"createIdBytes"]]) {
+        ++linkedLicenses;
+      }
+    }
+    NSString *title = linkedLicenses == 0 ? record[@"name"] :
+        [NSString stringWithFormat:@"%@ — used by %lu license%@",
+            record[@"name"], (unsigned long)linkedLicenses,
+            linkedLicenses == 1 ? @"" : @"s"];
     NSUInteger slot = [record[@"slot"] unsignedIntegerValue];
+    UIAlertActionStyle style = linkedLicenses == 0
+        ? UIAlertActionStyleDestructive : UIAlertActionStyleDefault;
     [choices addAction:[UIAlertAction actionWithTitle:title
-                                                style:UIAlertActionStyleDestructive
+                                                style:style
                                               handler:^(UIAlertAction *action) {
       (void)action;
+      if (linkedLicenses > 0) {
+        [weakSelf showIntegrationAlert:@"Mii Is In Use"
+                               message:@"Open Rename or Delete Licenses to rename or delete the linked license first. Removing its Mii appearance here could leave the license unusable."];
+        return;
+      }
       NSError *removeError = nil;
       if (!KartPadStageMiiRemoval(slot, &removeError)) {
         [weakSelf showIntegrationAlert:@"Mii Could Not Be Removed"
@@ -2235,7 +3131,7 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
         return;
       }
       [weakSelf showIntegrationAlert:@"Mii Removal Scheduled"
-                             message:@"Close and reopen KartPad to apply the change. A backup of the current Mii database will be kept automatically."];
+                             message:@"Fully close KartPad from the app switcher and reopen it to apply the appearance removal. Returning to the KartPad menu and resuming does not apply pending edits. A backup of the current Mii database will be kept automatically."];
     }]];
   }
   [choices addAction:[UIAlertAction actionWithTitle:@"Cancel"
@@ -2251,6 +3147,8 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
   [[SunPadInputMixer sharedMixer] clearInputFromTouch:YES];
   NSError *error = nil;
   NSArray<NSDictionary<NSString *, id> *> *records = KartPadMiiRecords(&error);
+  NSArray<NSDictionary<NSString *, id> *> *licenses =
+      error == nil ? KartPadLicenseRecords(&error) : @[];
   if (error != nil) {
     [self showIntegrationAlert:@"Miis Could Not Be Read"
                        message:error.localizedDescription];
@@ -2263,19 +3161,36 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
   NSString *summary = names.count == 0 ? @"No Miis found."
       : [names componentsJoinedByString:@", "];
   NSString *pending = KartPadHasPendingMiiChanges()
-      ? @"\n\nPending changes will be applied on the next launch." : @"";
+      ? @"\n\nChanges are pending. Fully close KartPad from the app switcher and reopen it to apply them before making another change. Returning to the KartPad menu and resuming does not apply pending edits." : @"";
   NSString *message = [NSString stringWithFormat:
-      @"%lu Mii%@ available: %@%@",
+      @"%lu Mii appearance%@ available: %@\n%lu existing license%@ found.\n\nA Mii supplies your name and appearance. A game license stores your progress and friend code. Create a license with New inside the game, then select your Mii.%@",
       (unsigned long)records.count, records.count == 1 ? @"" : @"s",
-      summary, pending];
+      summary, (unsigned long)licenses.count,
+      licenses.count == 1 ? @"" : @"s", pending];
   UIViewController *controller = KartPadVisibleViewController(_window);
   if (controller == nil) return;
   UIAlertController *manager = [UIAlertController
-      alertControllerWithTitle:@"Manage Miis (Experimental)"
+      alertControllerWithTitle:@"Player Identity"
                        message:message
                 preferredStyle:UIAlertControllerStyleActionSheet];
   __weak KartPadRuntimeOverlayHost *weakSelf = self;
-  [manager addAction:[UIAlertAction actionWithTitle:@"Import Mii…"
+  [manager addAction:[UIAlertAction actionWithTitle:@"Rename or Delete Licenses…"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *action) {
+    (void)action;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(0.35 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ [weakSelf showLicenseChoices]; });
+  }]];
+  [manager addAction:[UIAlertAction actionWithTitle:@"Edit Mii Name…"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *action) {
+    (void)action;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(0.35 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ [weakSelf showPlayerNameChoices]; });
+  }]];
+  [manager addAction:[UIAlertAction actionWithTitle:@"Import Mii Appearance…"
                                               style:UIAlertActionStyleDefault
                                             handler:^(UIAlertAction *action) {
     (void)action;
@@ -2283,7 +3198,7 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
                                  (int64_t)(0.35 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{ [weakSelf presentMiiImportPicker]; });
   }]];
-  [manager addAction:[UIAlertAction actionWithTitle:@"Remove a Mii…"
+  [manager addAction:[UIAlertAction actionWithTitle:@"Remove Mii Appearance…"
                                               style:UIAlertActionStyleDefault
                                             handler:^(UIAlertAction *action) {
     (void)action;
@@ -2291,7 +3206,7 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
                                  (int64_t)(0.35 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{ [weakSelf showMiiRemovalChoices]; });
   }]];
-  [manager addAction:[UIAlertAction actionWithTitle:@"Create a Mii…"
+  [manager addAction:[UIAlertAction actionWithTitle:@"About Mii Appearance…"
                                               style:UIAlertActionStyleDefault
                                             handler:^(UIAlertAction *action) {
     (void)action;
@@ -2413,6 +3328,11 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
   (void)overlay;
   NSError *error = nil;
   NSArray<NSURL *> *roots = KartPadGameDataRootsInDocuments(&error);
+  if (roots.count == 0) {
+    NSLog(@"[KartPad] %@", KartPadDocumentsFolderScanDetail(error));
+    [self presentGameDataFolderPicker];
+    return;
+  }
   if (roots.count == 1) {
     [self importExtractedGameDataFromURL:roots.firstObject deleteAfterwards:NO];
     return;
@@ -2421,9 +3341,7 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
   if (controller == nil) {
     return;
   }
-  NSString *message = roots.count == 0
-      ? KartPadDocumentsFolderScanDetail(error)
-      : @"Choose a Mario Kart Wii WBFS, ISO, or extracted DATA folder from this signed app's KartPad folder.";
+  NSString *message = @"Choose a Mario Kart Wii WBFS, ISO, or extracted DATA folder from this signed app's KartPad folder.";
   UIAlertController *alert =
       [UIAlertController alertControllerWithTitle:@"KartPad Folder"
                                           message:message
@@ -2435,28 +3353,6 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
                                             handler:^(UIAlertAction *action) {
       (void)action;
       [weakSelf importExtractedGameDataFromURL:root deleteAfterwards:NO];
-    }]];
-  }
-  if (roots.count == 0) {
-    [alert addAction:[UIAlertAction actionWithTitle:@"Choose from Files…"
-                                                style:UIAlertActionStyleDefault
-                                              handler:^(UIAlertAction *action) {
-      (void)action;
-      dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                   (int64_t)(0.35 * NSEC_PER_SEC)),
-                     dispatch_get_main_queue(), ^{
-        [weakSelf presentGameDataFolderPicker];
-      });
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Try Again"
-                                                style:UIAlertActionStyleDefault
-                                              handler:^(UIAlertAction *action) {
-      (void)action;
-      dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                   (int64_t)(0.35 * NSEC_PER_SEC)),
-                     dispatch_get_main_queue(), ^{
-        [weakSelf gameOverlayRequestsGameDataFolderImport:nil];
-      });
     }]];
   }
   [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
@@ -2517,29 +3413,102 @@ NSError *KartPadPerformGameDataImport(NSURL *url,
   [controller presentViewController:alert animated:YES completion:nil];
 }
 
+- (void)showControllerButtonAssignment:(uint16_t)gameButton title:(NSString *)title {
+  UIAlertController *sheet = [UIAlertController alertControllerWithTitle:title
+      message:@"Choose a physical button. If it is already assigned, the two assignments swap. Applies to all connected controllers; touch controls keep their layout."
+      preferredStyle:UIAlertControllerStyleActionSheet];
+  NSArray<NSString *> *names = @[@"A / Cross / bottom", @"B / Circle / right",
+      @"X / Square / left", @"Y / Triangle / top", @"Left Shoulder / L1"];
+  const SunPadPhysicalControllerButton buttons[] = {SunPadPhysicalControllerButtonA,
+      SunPadPhysicalControllerButtonB, SunPadPhysicalControllerButtonX,
+      SunPadPhysicalControllerButtonY, SunPadPhysicalControllerButtonLeftShoulder};
+  for (NSUInteger index = 0; index < names.count; ++index) {
+    const SunPadPhysicalControllerButton physical = buttons[index];
+    [sheet addAction:[UIAlertAction actionWithTitle:names[index]
+        style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+      [SunPadControllerMappingStore setMapping:SunPadControllerButtonMappingByAssigning(
+          [SunPadControllerMappingStore mapping], physical, gameButton)];
+    }]];
+  }
+  [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+  [self presentOverlayAlert:sheet];
+}
+
+- (void)showControllerButtonMapping {
+  UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Controller Button Mapping"
+      message:@"Choose the game button to reassign. Sticks, D-pad, Menu, and triggers remain direct."
+      preferredStyle:UIAlertControllerStyleActionSheet];
+  const SunPadControllerButtonMapping mapping = [SunPadControllerMappingStore mapping];
+  NSArray<NSString *> *names = @[@"A — Accelerate / Confirm", @"B — Drift / Back",
+      @"X — Rear View", @"Y", @"ZR — Rear View"];
+  const uint16_t buttons[] = {SunPadButtonA, SunPadButtonB, SunPadButtonX, SunPadButtonY, SunPadButtonZ};
+  const SunPadPhysicalControllerButton physical[] = {mapping.gameA, mapping.gameB,
+      mapping.gameX, mapping.gameY, mapping.gameZ};
+  __weak KartPadRuntimeOverlayHost *weakSelf = self;
+  for (NSUInteger index = 0; index < names.count; ++index) {
+    NSString *name = names[index];
+    const uint16_t gameButton = buttons[index];
+    NSString *label = [NSString stringWithFormat:@"%@: %@", name,
+        SunPadPhysicalControllerButtonName(physical[index])];
+    [sheet addAction:[UIAlertAction actionWithTitle:label
+        style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+      [weakSelf showControllerButtonAssignment:gameButton title:name];
+    }]];
+  }
+  [sheet addAction:[UIAlertAction actionWithTitle:@"Reset Face Button Mapping"
+      style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+    [SunPadControllerMappingStore reset];
+    [weakSelf showMultiplayerMessage:@"Default Mapping Restored"
+        message:@"The default A/B/X/Y and left-shoulder mapping will apply to new controller input."];
+  }]];
+  [sheet addAction:[UIAlertAction actionWithTitle:@"Done" style:UIAlertActionStyleCancel handler:nil]];
+  [self presentOverlayAlert:sheet];
+}
+
 - (void)gameOverlayRequestsControllerMapping:(SunPadGameOverlay *)overlay {
   (void)overlay;
-  const NSUInteger count =
-      [KartPadPhysicalControllers sharedControllers].connectedControllerCount;
-  NSString *message = [NSString stringWithFormat:
-      @"Extended controllers connect automatically in stable Player 1–4 slots. Face buttons use KartPad's persisted A/B/X/Y/Z mapping; sticks, D-pad, Menu, shoulders, and triggers remain direct. Connected now: %lu.",
-      (unsigned long)count];
-  [self showIntegrationAlert:@"Controller Setup" message:message];
+  KartPadPhysicalControllers *controllers = [KartPadPhysicalControllers sharedControllers];
+  [controllers reconcileControllers];
+  NSString *players = [[controllers playerDescriptions] componentsJoinedByString:@"\n"];
+  NSString *message = players;
+  UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Controller Setup"
+      message:message preferredStyle:UIAlertControllerStyleAlert];
+  __weak KartPadRuntimeOverlayHost *weakSelf = self;
+  [sheet addAction:[UIAlertAction actionWithTitle:@"Customize Face Buttons…"
+      style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+    [weakSelf showControllerButtonMapping];
+  }]];
+  [sheet addAction:[UIAlertAction actionWithTitle:@"Pairing & Compatibility…"
+      style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+    [weakSelf showMultiplayerMessage:@"Connect & Register Controllers"
+        message:@"Pair pads in system Bluetooth settings. In the game, choose Multiplayer and press mapped A on each pad at Register Controllers. Touch shares Player 1.\n\nDualShock 4 / DualSense defaults: Cross = A, Circle = B, Square = X, Triangle = Y. GameCube-style pads need OS Extended Gamepad support. Original GameCube USB adapters are not supported on iPad."];
+  }]];
+  [sheet addAction:[UIAlertAction actionWithTitle:@"Done" style:UIAlertActionStyleCancel handler:nil]];
+  [self presentOverlayAlert:sheet];
 }
 
 - (NSString *)gameOverlayDiagnosticContext:(SunPadGameOverlay *)overlay {
   (void)overlay;
-  return @"product=KartPad\nsurface=SDL UIKit+Metal\ncore=full-retail\nprivateDataIncluded=false";
+  SunPadSettings *settings = SunPadSettings.sharedSettings;
+  return KartPadDiagnosticContext(
+      [KartPadRetroRewindInstaller.installedRootPath stringByAppendingPathComponent:@"version.txt"],
+      KartPadRetroRewindInstaller.requiredVersion,
+      gKartPadRetroRewindSelected ? @"retro_rewind" : @"base",
+      settings.renderScaleFloat, settings.aspectRatioMode);
 }
 
 - (NSString *)gameOverlayPerformanceProfile:(SunPadGameOverlay *)overlay {
   (void)overlay;
-  return @"full-retail-simulator";
+  SunPadSettings *settings = SunPadSettings.sharedSettings;
+  return [NSString stringWithFormat:@"%@; scale=%.2fx; aspect=%ld",
+      gKartPadRetroRewindSelected ? @"retro_rewind" : @"base",
+      settings.renderScaleFloat, (long)settings.aspectRatioMode];
 }
 
 @end
 
 extern "C" bool KartPadMobileEnsureGameDataAvailable() {
+  KartPadApplyPrivateServerAtLaunch();
   NSError *miiError = nil;
   if (!KartPadApplyPendingMiiDatabase(&miiError)) {
     NSLog(@"[KartPad] pending Mii changes were not applied: %@",
@@ -2557,6 +3526,12 @@ extern "C" bool KartPadMobileEnsureGameDataAvailable() {
 
 extern "C" const char *KartPadMobileSelectedRuntimeProfile() {
   return gKartPadRetroRewindSelected ? "retro_rewind" : "base";
+}
+
+extern "C" void KartPadMobileServiceMainMenu() {
+  if (gKartPadMainMenuRequested && gRuntimeOverlayHost != nil && NSThread.isMainThread) {
+    [gRuntimeOverlayHost runMainMenu];
+  }
 }
 
 extern "C" void KartPadMobileRuntimeHostInstall(void *sdlWindow) {
@@ -2591,6 +3566,10 @@ extern "C" bool KartPadMobileReadClassicInput(
   return KartPadMobileReadClassicInputForPlayer(0, snapshot);
 }
 
+extern "C" bool KartPadMobileIsControllerConnected(unsigned int player) {
+  return [[KartPadPhysicalControllers sharedControllers] isPlayerConnected:player];
+}
+
 extern "C" bool KartPadMobileReadClassicInputForPlayer(
     unsigned int player, KartPadMobileClassicInputSnapshot *snapshot) {
   if (snapshot == nullptr || gRuntimeOverlayHost == nil) {
@@ -2607,14 +3586,12 @@ extern "C" bool KartPadMobileReadClassicInputForPlayer(
   }
   KartPadClassicInputState adapted =
       kartpad::mobile::AdaptSunPadInput(source);
+  KartPadMotionSteering *motion = [KartPadMotionSteering sharedSteering];
+  const BOOL shakeTrick = player == 0 ? [motion consumeShakeTrick] : NO;
   if (player == 0 &&
       [KartPadPhysicalControllers sharedControllers].connectedControllerCount == 0) {
-    const float motion = [KartPadMotionSteering sharedSteering].currentSteering;
-    const int motionStick = static_cast<int>(std::lround(motion * 127.0f));
-    if (std::abs(motionStick) > std::abs(static_cast<int>(adapted.leftStickX))) {
-      adapted.leftStickX = static_cast<std::int8_t>(
-          std::clamp(motionStick, -127, 127));
-    }
+    kartpad::mobile::ApplyMotionInput(adapted, motion.currentSteering,
+                                      shakeTrick);
   }
   snapshot->buttons = adapted.buttons;
   snapshot->leftStickX = std::clamp(static_cast<float>(adapted.leftStickX) / 127.0f,

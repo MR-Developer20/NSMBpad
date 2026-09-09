@@ -11,9 +11,9 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 
-RELEASE_TAG = "v0.3.0-preview.4"
-APP_VERSION = "0.3.0"
-APP_BUILD = "11"
+RELEASE_TAG = "v0.4.14-ios.1"
+APP_VERSION = "0.4.14"
+APP_BUILD = "33"
 FORBIDDEN_SUFFIXES = {
     ".iso", ".gcm", ".gcz", ".ciso", ".wbfs", ".wia", ".rvz",
     ".gci", ".sav", ".log", ".mobileprovision", ".p12", ".p8",
@@ -30,6 +30,7 @@ REQUIRED_ENTRIES = {
     "THIRD_PARTY_NOTICES.md",
     "ThirdPartyLicenses/Aurora-MIT.txt",
     "ThirdPartyLicenses/Dolphin-COPYING.txt",
+    "ThirdPartyLicenses/Minizip-NG.txt",
     "ThirdPartyLicenses/SDL3-Zlib.txt",
     "ThirdPartyLicenses/WiiCompiled-GPL-3.0.txt",
 }

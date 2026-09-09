@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="480" viewBox="0 0 800 480">
+  <defs>
+    <linearGradient id="hot" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#e52255"/>
+      <stop offset="0.48" stop-color="#ff4f52"/>
+      <stop offset="1" stop-color="#ffb52e"/>
+    </linearGradient>
+    <linearGradient id="warm" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffd05a"/>
+      <stop offset="1" stop-color="#ff741c"/>
+    </linearGradient>
+    <filter id="shadow" x="-25%" y="-25%" width="150%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="14" result="blur"/>
+      <feOffset dy="18" result="offset"/>
+      <feColorMatrix in="offset" type="matrix" values="0 0 0 0 0.01 0 0 0 0 0.02 0 0 0 0 0.08 0 0 0 .72 0"/>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <g transform="translate(144 -16) scale(.5)" filter="url(#shadow)">
+    <path d="M 270 783 C 292 620, 370 492, 494 411 C 585 351, 678 306, 789 266"
+          fill="none" stroke="#05152f" stroke-width="122" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M 270 783 C 292 620, 370 492, 494 411 C 585 351, 678 306, 789 266"
+          fill="none" stroke="url(#hot)" stroke-width="88" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M 289 760 C 319 608, 390 510, 512 428 C 598 371, 688 327, 766 296"
+          fill="none" stroke="#ff8a4f" stroke-opacity="0.62" stroke-width="7" stroke-linecap="round"/>
+    <path d="M 516 554 L 738 795" fill="none" stroke="#05152f" stroke-width="118" stroke-linecap="square"/>
+    <path d="M 516 554 L 738 795" fill="none" stroke="url(#warm)" stroke-width="82" stroke-linecap="square"/>
+    <path d="M 540 579 L 750 786" fill="none" stroke="#ffd15a" stroke-opacity="0.55" stroke-width="7"/>
+  </g>
+</svg>

@@ -1,52 +1,55 @@
 # KartPad release checklist
 
-The exact 67-row matrix in `docs/PRD.md` remains the authority for full
-engineering completion. A community preview may ship with narrower, explicit
-limitations when its exact artifact passes every preview gate below.
+Use this checklist for each candidate. Published versions and active work live
+in [STATUS.md](STATUS.md) and the [maintenance board](MAINTENANCE-BOARD.md).
+Completed [release checkpoints through 0.4.11](archive/release-checkpoints-through-0.4.11.md)
+are historical evidence, not a checklist for the next build.
 
-## Published 0.3.0 preview
+## Source and scope
 
-- [x] Exact source pins, notices, and reproducible dependency graph
-- [x] Supported disc identity and private game-data boundary
-- [x] Dual-mode Original / Retro Rewind graph and official version lock
-- [x] iPhone/iPad ARM64 build, package, privacy, and signature-residue audits
-- [x] Physical iPad Retro Rewind download, verification, installation, launch,
-      and initial single-player gameplay
-- [x] Deterministic IPA packaging and SHA-256 checksum
-- [x] Embedded install guide, release notes, provenance, rights, and licenses
-- [x] Hosted IPA downloaded, byte-compared, checksum-verified, and re-audited
-- [x] Dereferenced release tag and hosted artifact provenance match the audited
-      source commit
+- [ ] Record platform, version/build, exact source commit and intended test or
+      release purpose. Identify affected platforms and unresolved reports.
+- [ ] Review the diff and run checks appropriate to the changed code, including
+      regressions for any reproduced defect. Prepare runtime patches afresh.
+- [ ] Verify pinned dependencies, Retro Rewind profile and repository safety.
+      Preserve existing working trees, user data and signing identities.
+- [ ] Review [rights, Corresponding Source and game-content boundaries](../RIGHTS_AND_LICENSES.md)
+      and [third-party notices](../THIRD_PARTY_NOTICES.md) for the exact package.
 
-Published artifact: `v0.3.0-preview.3`, app 0.3.0 build 10, source
-`452af2dde3d19508a5e6ced6c03deb0e24b8b509`, IPA SHA-256
-`e839c115a97867949b16fa1c4a2a3472dce4eb3da6c69fff6f40c3eca2abbdcf`.
+## Build and package
 
-## Published 0.3.0 Preview 4
+- [ ] Build from the intended clean source and record the artifact identity.
+      A source fix does not update an old binary.
+- [ ] Run the platform app/package audit, including architecture, minimum OS,
+      signatures, resources, notices and provenance. Exclude private data and
+      signing material.
+- [ ] Package twice and compare bytes where the platform's release workflow
+      requires reproducibility; verify the final SHA-256 and version metadata.
+- [ ] Confirm the update path preserves data with the existing signer and bundle
+      identifier. Do not uninstall a working preview to test a different signer.
 
-- [x] Experimental Mii database and Apple integration contracts pass
-- [x] Experimental macOS Wii pairing compiles, links, packages, and carries
-      Bluetooth permission
-- [x] Pre-release iPad in-place install preserves the complete KartPad
-      Application Support/NAND tree byte-for-byte and remains running
-- [x] Exact merged-main app 0.3.0 build 11 passes the device-app audit
-- [x] Two deterministic IPA packages match byte-for-byte
-- [x] Exact IPA provenance, notices, privacy, and signature-residue audit pass
-- [x] Hosted IPA and checksum match the local audited artifacts byte-for-byte
-- [x] Dereferenced `v0.3.0-preview.4` tag matches the artifact source commit
-- [x] Issue #5 receives the bounded external Mii and Wii hardware test request
+Platform procedures: [Android release](RELEASING_ANDROID.md),
+[Apple build](BUILDING.md), [Personal IPA Builder](BUILDER.md),
+[Mac install](INSTALL_MACOS.md) and [tvOS build/test](TVOS.md).
 
-Published artifact: `v0.3.0-preview.4`, app 0.3.0 build 11, source
-`3e43c002d60378bd4975c4637a8e3a149f2d733e`, IPA SHA-256
-`6bd4a3bd6a8582dd193093dda7471cecee2cafd7450f51ea59454329a1529b9e`.
+## Acceptance and publication
 
-## Full engineering-completion gates still open
+- [ ] Record build, package, emulator, physical-device and production-online
+      results separately. State precisely which remain pending.
+- [ ] Use the [iPhone/iPad](PHYSICAL-ACCEPTANCE.md),
+      [Android](ANDROID-PHYSICAL-HANDOFF.md) or [tvOS](TVOS-TESTING.md) device
+      procedure as applicable. Verify existing saves after an in-place update.
+- [ ] Write versioned release notes with changes, installation, test scope and
+      known limits. Use a prerelease for an unaccepted testing candidate.
+- [ ] Publish only within the owner's explicit release authorization. The
+      scheduled coordinator and its workers **must never publish an IPA**;
+      [manual Apple ownership is separate](MAINTENANCE.md#platforms-and-build-completion).
+- [ ] Download hosted assets anonymously, compare hashes and bytes, and re-audit
+      the downloaded package, signature and provenance.
+- [ ] Update the README download table, installation guide, status and maintenance
+      board together. Keep the README section order and AI disclosure intact;
+      put detailed changes in release notes rather than adding release-history sections.
 
-- [ ] Stable representative performance and frame pacing across supported
-      devices and tracks
-- [ ] Complete three- and four-player result paths
-- [ ] Required long-duration soak coverage
-- [ ] Complete touch, motion, controller, audio, thermal, and lifecycle matrix
-- [ ] Production Retro WFC and external-client acceptance after service recovery
-- [ ] Clean fresh-checkout provisioning across every intended target
-- [ ] No remaining P0/P1 defects and complete exact-candidate evidence index
+Sustained performance, long soaks, full controller/multiplayer coverage and
+production-online acceptance remain governed by the [PRD matrix](PRD.md).
+A published preview does not close those rows.

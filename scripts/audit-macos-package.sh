@@ -6,6 +6,7 @@ if [[ $# -ne 1 || "$1" != /* || "$1" != *.app ]]; then
   exit 64
 fi
 
+repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 app="$1"
 contents="${app}/Contents"
 plist="${contents}/Info.plist"
@@ -21,16 +22,26 @@ icon_name="$(plutil -extract CFBundleIconFile raw "${plist}")"
 executable="${contents}/MacOS/${executable_name}"
 
 test "${bundle_identifier}" = "dev.kartpad.app"
+test "$(plutil -extract CFBundleShortVersionString raw "${plist}")" = "0.4.11"
+test "$(plutil -extract CFBundleVersion raw "${plist}")" = "26"
 test "$(plutil -extract NSBluetoothAlwaysUsageDescription raw "${plist}")" = \
   "KartPad uses Bluetooth to pair and connect an experimental Wii Remote and Nunchuk."
 test -x "${executable}"
 test -f "${contents}/Resources/${icon_name%.icns}.icns"
-test -f "${contents}/MacOS/dsp_coef.bin"
+cmp "${contents}/Resources/${icon_name%.icns}.icns" "${repo_root}/branding/exports/KartPad.icns"
+test "$(readlink "${contents}/MacOS/dsp_coef.bin")" = \
+  "../Resources/Runtime/dsp_coef.bin"
+test "$(readlink "${contents}/MacOS/build-fingerprint.json")" = \
+  "../Resources/Runtime/build-fingerprint.json"
+test "$(readlink "${contents}/MacOS/wii_bootstrap")" = \
+  "../Resources/Runtime/wii_bootstrap"
+test -f "${contents}/Resources/Runtime/dsp_coef.bin"
+test -f "${contents}/Resources/Runtime/build-fingerprint.json"
 if [[ ! -f "${contents}/Resources/initial_pipeline_cache.db" ]]; then
   echo "package lacks its read-only initial pipeline cache resource" >&2
   exit 66
 fi
-test -d "${contents}/MacOS/wii_bootstrap/shared2/wc24"
+test -d "${contents}/Resources/Runtime/wii_bootstrap/shared2/wc24"
 if [[ "$(file -b "${executable}")" != *"Mach-O 64-bit executable arm64"* ]]; then
   echo "main executable is not arm64 Mach-O" >&2
   exit 65
@@ -91,7 +102,17 @@ executable_strings="$(strings "${executable}")"
 for shell_contract in \
   "KartPad Settings" \
   "KartPad Controls" \
-  "Manage Miis (Experimental)" \
+  "Original Mario Kart Wii" \
+  "Retro Rewind" \
+  "chooseRetroRewindData:" \
+  "RMCP01-r0-retro-rewind" \
+  "KartPadRuntimeProfile" \
+  "Quit and reopen KartPad to switch games. Your saves and settings are preserved." \
+  "Player Identity" \
+  "Mii Appearance" \
+  "showPlayerNameEditor" \
+  "showLicenseManager" \
+  "Save for Next Launch" \
   "Experimental Wii Remote + Nunchuk" \
   "Wii Remote + Nunchuk (Experimental)" \
   "Use item" \

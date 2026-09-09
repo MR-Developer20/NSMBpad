@@ -39,12 +39,38 @@ void TestMotionMapping() {
               "invalid sensor input was not neutral");
 }
 
+void TestShakeDetection() {
+  constexpr double neverTriggered = -1.0;
+  Require(KartPadShakeActionForSample(0.2, 1.0, true, neverTriggered) ==
+              KartPadShakeAction::Rearm,
+          "settled motion did not arm shake detection");
+  Require(KartPadShakeActionForSample(0.8, 1.0, true, neverTriggered) ==
+              KartPadShakeAction::None,
+          "ordinary motion triggered a shake");
+  Require(KartPadShakeActionForSample(1.5, 1.0, true, neverTriggered) ==
+              KartPadShakeAction::Trigger,
+          "deliberate shake did not trigger");
+  Require(KartPadShakeActionForSample(1.5, 1.1, false, 1.0) ==
+              KartPadShakeAction::None,
+          "held acceleration retriggered before rearming");
+  Require(KartPadShakeActionForSample(1.5, 1.2, true, 1.0) ==
+              KartPadShakeAction::Disarm,
+          "cooldown did not consume an early impulse");
+  Require(KartPadShakeActionForSample(1.5, 1.5, true, 1.0) ==
+              KartPadShakeAction::Trigger,
+          "shake did not trigger after cooldown");
+  Require(KartPadShakeActionForSample(NAN, 2.0, true, neverTriggered) ==
+              KartPadShakeAction::None,
+          "invalid acceleration changed detector state");
+}
+
 }  // namespace
 
 int main() {
   @autoreleasepool {
     try {
       TestMotionMapping();
+      TestShakeDetection();
       std::cout << "KartPad mobile motion-steering mapping passed\n";
       return EXIT_SUCCESS;
     } catch (const std::exception &error) {

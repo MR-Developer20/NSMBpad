@@ -65,27 +65,27 @@
     ],
     "expectedGeneratedFunctions": 29637,
     "expectedBaseFunctions": 29065,
-    "expectedRetroFunctions": 4186
+    "expectedRetroFunctions": 4188
   },
   "retroRewind": {
-    "version": "6.12.4",
+    "version": "6.12.7",
     "versionManifestUrl": "https://update.rwfc.net/RetroRewind/RetroRewindVersion.txt",
     "root": "RetroRewind6",
     "archive": {
-      "url": "https://cdn.update.rwfc.net/RetroRewind/zip/6.12.4-full2.zip",
-      "bytes": 1844093118,
-      "sha256": "d2ab1ecfda4c12bb90304897aecd03e2cbfb9a93e353fff928a494aa5d9ec71d",
+      "url": "https://cdn.update.rwfc.net/RetroRewind/zip/6.12.7-full.zip",
+      "bytes": 1859041688,
+      "sha256": "ade59f3ae217944bd7c3535b3bae79d5aa7b521ba00c581a16c7c2e3ce54c349",
       "maximumExpandedBytes": 2200000000
     },
     "codePul": {
       "path": "Binaries/Code.pul",
-      "bytes": 1718176,
-      "sha256": "ea93f9b8bf6d7696a807c1da5be724f1b0ec3eea563c1fdc1adfab10cb6c98e2"
+      "bytes": 1723048,
+      "sha256": "3a1e60f6c94e435ff672167816dbe040d0f48874bfa093ada39e468655baef72"
     },
     "riivolutionXml": {
       "path": "xml/RetroRewind6.xml",
-      "bytes": 20949,
-      "sha256": "9493911ddd39df695016e2cb7069df4a5f2b4c3a9eeef4d91ea00438ca7952df"
+      "bytes": 21047,
+      "sha256": "faf88234f81e16a85403d2a86d25e2ef4b261aedb553a312b532e60a11b28200"
     },
     "payload": {
       "url": "http://nas.play.rwfc.net/payload?g=RMCPD00",

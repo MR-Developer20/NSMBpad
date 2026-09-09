@@ -8,9 +8,9 @@ import sys
 from pathlib import Path
 
 
-RELEASE_TAG = "v0.3.0-preview.4"
-APP_VERSION = "0.3.0"
-APP_BUILD = "11"
+RELEASE_TAG = "v0.4.14-ios.1"
+APP_VERSION = "0.4.14"
+APP_BUILD = "33"
 
 
 def fail(message: str) -> None:
@@ -19,14 +19,14 @@ def fail(message: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Create the audited public KartPad unsigned community-preview IPA."
+        description="Create the audited public KartPad unsigned community IPA."
     )
     parser.add_argument("app", type=Path, help="Path to the unsigned KartPad.app")
     parser.add_argument(
         "output",
         type=Path,
         nargs="?",
-        help="Output IPA path (defaults to artifacts/KartPad-v0.3.0-preview.4-unsigned.ipa)",
+        help="Output IPA path (defaults to artifacts/KartPad-v0.4.14-ios.1-unsigned.ipa)",
     )
     args = parser.parse_args()
 
@@ -38,11 +38,12 @@ def main() -> int:
     output = (
         args.output.resolve()
         if args.output
-        else repo / "artifacts/KartPad-v0.3.0-preview.4-unsigned.ipa"
+        else repo / "artifacts/KartPad-v0.4.14-ios.1-unsigned.ipa"
     )
-    if subprocess.run(
-        ["git", "-C", str(repo), "diff", "--quiet", "HEAD", "--"], check=False
-    ).returncode:
+    if subprocess.check_output(
+        ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=all"],
+        text=True,
+    ).strip():
         fail("public IPA packaging requires a clean tracked source tree")
     source_commit = subprocess.check_output(
         ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
@@ -69,7 +70,9 @@ def main() -> int:
     xcode_build = app.parents[1]
     additional_entries = {
         "INSTALL_IPA.md": repo / "docs/INSTALL_IPA.md",
-        "RELEASE_NOTES.md": repo / "docs/releases/v0.3.0-preview.4.md",
+        "RELEASE_NOTES.md": repo / "docs/releases/v0.4.14-ios.1.md",
+        "MULTIPLAYER.md": repo / "docs/MULTIPLAYER.md",
+        "LICENSE": repo / "LICENSE",
         "LICENSES/GPL-3.0.txt": repo / "LICENSES/GPL-3.0.txt",
         "RIGHTS_AND_LICENSES.md": repo / "RIGHTS_AND_LICENSES.md",
         "THIRD_PARTY_NOTICES.md": repo / "THIRD_PARTY_NOTICES.md",
@@ -78,6 +81,7 @@ def main() -> int:
         "ThirdPartyLicenses/Dolphin-COPYING.txt": repo / "ref/upstream/dolphin/COPYING",
         "ThirdPartyLicenses/Dolphin-Externals.md": repo / "ref/upstream/dolphin/Externals/licenses.md",
         "ThirdPartyLicenses/FreeType.txt": xcode_build / "_deps/freetype-src/LICENSE.TXT",
+        "ThirdPartyLicenses/Minizip-NG.txt": repo / "ref/upstream/dolphin/Externals/minizip-ng/minizip-ng/LICENSE",
         "ThirdPartyLicenses/SDL3-Zlib.txt": xcode_build / "_deps/sdl-src/LICENSE.txt",
         "ThirdPartyLicenses/Tracy-BSD-3-Clause.txt": xcode_build / "_deps/tracy-src/LICENSE",
         "ThirdPartyLicenses/WiiCompiled-GPL-3.0.txt": repo / "ref/upstream/Wiicompiled/LICENSE",
@@ -103,7 +107,7 @@ def main() -> int:
         "containsSigningMaterial": False,
         "maintainerAuthorizedFreeCommunityRelease": True,
         "upstreamRightsConfirmed": False,
-        "rightsStatus": "community preview; upstream and game-code rights unresolved",
+        "rightsStatus": "community release; upstream and game-code rights unresolved",
     }
     digest = package_unsigned_ipa(app, output, provenance, additional_entries)
     print(f"Public unsigned IPA: {output}")

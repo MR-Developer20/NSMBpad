@@ -90,9 +90,11 @@ for motion_contract in \
 done
 
 for experimental_feature_contract in \
-  'Manage Miis (Experimental)' \
+  'Player Identity' \
+  'Edit Mii Name' \
   'dev.kartpad.manage-miis' \
   'PendingRFL_DB.dat' \
+  'PendingPlayerIdentity.plist' \
   'Experimental Wii Remote + Nunchuk' \
   'Direct Wii Remote pairing is currently available only in the macOS build.'; do
   if ! rg -a -F -q "${experimental_feature_contract}" "${binary}"; then
@@ -116,7 +118,7 @@ if ! rg -a -F -q '[KartPad] exact SunPad runtime overlay installed' "${binary}";
 fi
 for importer_contract in \
   'Game Data Required' \
-  'Import from KartPad Folder' \
+  "Import from This Installation's Folder" \
   'Opening disc image' \
   'Game-file extraction was incomplete' \
   'RemoveGameDataOnNextLaunch' \

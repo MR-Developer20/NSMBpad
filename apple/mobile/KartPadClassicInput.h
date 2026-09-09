@@ -43,4 +43,9 @@ inline constexpr std::uint32_t kClassicButtonRight = 0x00008000;
  * unchanged; only this boundary is game-specific. */
 [[nodiscard]] KartPadClassicInputState AdaptSunPadInput(SunPadInputState input) noexcept;
 
+/* Merge phone motion after touch adaptation. A shake is exposed as one Classic
+ * D-pad Up sample; Mario Kart decides whether that means a trick or wheelie. */
+void ApplyMotionInput(KartPadClassicInputState& input, float steering,
+                      bool shakeTrick) noexcept;
+
 }  // namespace kartpad::mobile

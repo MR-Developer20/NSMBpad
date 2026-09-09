@@ -13,6 +13,8 @@
 namespace kartpad::mii {
 
 inline constexpr std::size_t kMaximumMiiSlots = 100;
+inline constexpr std::size_t kMiiNameByteSize = 20;
+inline constexpr std::size_t kCreateIdByteSize = 8;
 
 struct MiiRecord {
     std::size_t slot = 0;
@@ -199,6 +201,61 @@ inline DatabaseResult ImportMii(std::span<uint8_t> database,
         return {false, "The Mii database has no empty slots."};
     }
     std::copy(mii.begin(), mii.end(), database.begin() + emptyOffset);
+    UpdateDatabaseCrc(database);
+    return {true, {}};
+}
+
+inline DatabaseResult ValidateUtf16BigEndianName(
+        std::span<const uint8_t> utf16BigEndianName) {
+    if (utf16BigEndianName.empty() ||
+        utf16BigEndianName.size() > kMiiNameByteSize ||
+        (utf16BigEndianName.size() % 2) != 0) {
+        return {false, "A player name must contain 1 to 10 characters."};
+    }
+    for (std::size_t offset = 0; offset < utf16BigEndianName.size(); offset += 2) {
+        const uint16_t unit = ReadBigEndian16(utf16BigEndianName, offset);
+        if (unit == 0 || unit < 0x20u ||
+            (unit >= 0xDC00u && unit <= 0xDFFFu)) {
+            return {false, "The player name contains an unsupported character."};
+        }
+        if (unit >= 0xD800u && unit <= 0xDBFFu) {
+            if (offset + 3 >= utf16BigEndianName.size()) {
+                return {false,
+                        "The player name contains an unsupported character."};
+            }
+            const uint16_t low = ReadBigEndian16(utf16BigEndianName, offset + 2);
+            if (low < 0xDC00u || low > 0xDFFFu) {
+                return {false,
+                        "The player name contains an unsupported character."};
+            }
+            offset += 2;
+        }
+    }
+    return {true, {}};
+}
+
+inline DatabaseResult RenameMii(std::span<uint8_t> database,
+                                std::size_t slot,
+                                std::span<const uint8_t> utf16BigEndianName) {
+    if (const auto validation = ValidateDatabase(database); !validation) {
+        return validation;
+    }
+    if (slot >= kMaximumMiiSlots) {
+        return {false, "The selected Mii slot is invalid."};
+    }
+    if (const auto validation =
+            ValidateUtf16BigEndianName(utf16BigEndianName); !validation) {
+        return validation;
+    }
+
+    const std::size_t recordOffset = kMiiBlockOffset + slot * kMiiBlockSize;
+    if (recordOffset + kMiiBlockSize > database.size() ||
+        IsEmptyMii(database.subspan(recordOffset, kMiiBlockSize))) {
+        return {false, "The selected Mii no longer exists."};
+    }
+    auto name = database.subspan(recordOffset + 0x02, kMiiNameByteSize);
+    std::fill(name.begin(), name.end(), 0);
+    std::copy(utf16BigEndianName.begin(), utf16BigEndianName.end(), name.begin());
     UpdateDatabaseCrc(database);
     return {true, {}};
 }

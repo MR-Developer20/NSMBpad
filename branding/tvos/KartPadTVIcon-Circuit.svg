@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="480" viewBox="0 0 800 480">
+  <defs>
+    <linearGradient id="hot" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#e52255"/>
+      <stop offset="0.48" stop-color="#ff4f52"/>
+      <stop offset="1" stop-color="#ffb52e"/>
+    </linearGradient>
+    <linearGradient id="warm" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffd05a"/>
+      <stop offset="1" stop-color="#ff741c"/>
+    </linearGradient>
+    <filter id="shadow" x="-25%" y="-25%" width="150%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="14" result="blur"/>
+      <feOffset dy="18" result="offset"/>
+      <feColorMatrix in="offset" type="matrix" values="0 0 0 0 0.01 0 0 0 0 0.02 0 0 0 0 0.08 0 0 0 .72 0"/>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <g transform="translate(144 -16) scale(.5)" filter="url(#shadow)">
+    <circle cx="516" cy="514" r="332" fill="none" stroke="url(#hot)" stroke-width="70"
+            stroke-dasharray="760 54 315 75 490 95" transform="rotate(-18 516 514)"/>
+    <circle cx="516" cy="514" r="250" fill="none" stroke="url(#warm)" stroke-width="50"
+            stroke-dasharray="360 58 255 760" transform="rotate(203 516 514)"/>
+    <path d="M 122 677 H 263" stroke="url(#hot)" stroke-width="22" stroke-linecap="round"/>
+    <path d="M 85 731 H 232" stroke="url(#hot)" stroke-width="18" stroke-linecap="round"/>
+    <path d="M 140 781 H 218" stroke="url(#hot)" stroke-width="15" stroke-linecap="round"/>
+  </g>
+</svg>

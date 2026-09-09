@@ -14,6 +14,7 @@ profile_input="${repo_root}/private/self-build/retro-rewind/input"
 default_retro_root="${repo_root}/ref/upstream/rr-pulsar/PulsarPackCreator/Resources"
 retro_root="${default_retro_root}"
 payload=""
+image="${repo_root}/ref/Mario Kart Wii.wbfs"
 skip_retro_wfc=false
 dotnet_bin="/opt/homebrew/opt/dotnet@8/bin/dotnet"
 translator="${repo_root}/build/wiicompiled-fpscr/translator/src/Translator.Cli/bin/Release/net8.0/Translator.Cli.dll"
@@ -21,7 +22,7 @@ translation_jobs="${KARTPAD_TRANSLATION_JOBS:-2}"
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: scripts/translate-retro-rewind.sh (--payload FILE | --skip-retro-wfc) [--retro-root DIR]
+Usage: scripts/translate-retro-rewind.sh (--payload FILE | --skip-retro-wfc) [--image FILE] [--retro-root DIR]
 
 Retranslates the user-owned RMCP01 base with awareness of KartPad's pinned
 Retro Rewind Code.pul, translates the static mod profile, and emits a separate
@@ -32,6 +33,11 @@ USAGE
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --image)
+      [[ $# -ge 2 ]] || { usage; exit 64; }
+      image="$2"
+      shift 2
+      ;;
     --payload)
       [[ $# -ge 2 ]] || { usage; exit 64; }
       payload="$2"
@@ -72,6 +78,11 @@ fi
 }
 
 retro_root="$(cd "${retro_root}" && pwd)"
+image="$(cd "$(dirname "${image}")" && pwd)/$(basename "${image}")"
+[[ -f "${image}" ]] || {
+  echo "ERROR: missing disc image at ${image}" >&2
+  exit 66
+}
 if [[ "${retro_root}" == "${default_retro_root}" ]]; then
   code_pul="${retro_root}/Code.pul"
 else
@@ -105,7 +116,7 @@ cmp -s "${code_pul}" "${staged_code_partial}" || {
 mv -f "${staged_code_partial}" "${staged_code}"
 trap - EXIT
 
-"${repo_root}/scripts/prepare-disc.sh"
+"${repo_root}/scripts/prepare-disc.sh" "${image}"
 "${repo_root}/scripts/prepare-patched-translator.sh"
 mkdir -p "${output}" "${base_manifest_dir}"
 

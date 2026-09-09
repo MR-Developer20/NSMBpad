@@ -1,3 +1,4 @@
+#import "../mobile/KartPadPrivateServerSettings.h"
 #import "KartPadMacShell.h"
 #import "KartPadMiiManager.h"
 #import "KartPadWiimotePairing.h"
@@ -13,8 +14,14 @@
 #include <cstdlib>
 
 #include "runtime_config.h"
+#if defined(KARTPAD_RUNTIME_PRODUCT_DUAL)
+#include "kartpad_retro_rewind_release.h"
+#endif
 
 static constexpr NSInteger kKartPadMenuTag = 0x4b505344;
+static NSString *const kKartPadRuntimeProfileDefaultsKey = @"KartPadRuntimeProfile";
+static NSString *const kKartPadBaseProfile = @"base";
+static NSString *const kKartPadRetroProfile = @"retro_rewind";
 
 static NSURL *DirectoryURL(const std::filesystem::path &path) {
   const std::string value = path.lexically_normal().string();
@@ -31,6 +38,12 @@ static NSURL *CacheURL() {
 }
 
 static NSString *YesNo(BOOL value) { return value ? @"yes" : @"no"; }
+
+static NSString *ActiveRuntimeProfileLabel() {
+  const char *profile = std::getenv("KARTPAD_RUNTIME_PROFILE");
+  return profile != nullptr && strcmp(profile, "retro_rewind") == 0
+      ? @"RMCP01-r0-retro-rewind" : @"RMCP01-r0-base";
+}
 
 static NSURL *SessionLogsURL() {
   return [ApplicationSupportURL() URLByAppendingPathComponent:@"Logs"
@@ -103,13 +116,13 @@ static void BeginSession() {
       @"KartPad bounded session log\n"
        "schema=1\n"
        "started=%@\n"
-       "productProfile=RMCP01-r0-base\n"
+       "productProfile=%@\n"
        "rendererBackend=Metal\n"
        "guestMemoryStrategy=flat-mach-vm\n"
        "schedulerStrategy=cooperative-fibers\n"
        "previousSessionClean=%@\n"
        "currentSessionState=active\n",
-      SessionTimestamp(), previousClean];
+      SessionTimestamp(), ActiveRuntimeProfileLabel(), previousClean];
   [manifest writeToURL:CurrentSessionURL()
             atomically:YES
               encoding:NSUTF8StringEncoding
@@ -253,6 +266,83 @@ static BOOL WriteGameDataRoot(NSString *root) {
   return wrote;
 }
 
+#if defined(KARTPAD_RUNTIME_PRODUCT_DUAL)
+static NSString *ConfiguredRetroRewindRoot() {
+  const RuntimeUserConfig config = RuntimeConfigFile::LoadConfigFile();
+  if (!config.retroRewindRoot || config.retroRewindRoot->empty()) return nil;
+  std::filesystem::path root(*config.retroRewindRoot);
+  if (root.is_relative()) root = RuntimeConfigFile::ResolveConfigPath().parent_path() / root;
+  return [NSString stringWithUTF8String:root.lexically_normal().string().c_str()];
+}
+
+static NSString *ValidateRetroRewindRoot(NSString *root, NSError **error) {
+  if (root.length == 0) {
+    return [NSString stringWithFormat:
+        @"Choose the RetroRewind6 folder from Retro Rewind %@.", @KARTPAD_RR_VERSION];
+  }
+  NSDictionary<NSString *, NSDictionary<NSString *, id> *> *required = @{
+    @KARTPAD_RR_CODE_PUL_PATH: @{
+      @"bytes": @(KARTPAD_RR_CODE_PUL_BYTES), @"sha256": @KARTPAD_RR_CODE_PUL_SHA256},
+    @KARTPAD_RR_XML_PATH: @{
+      @"bytes": @(KARTPAD_RR_XML_BYTES), @"sha256": @KARTPAD_RR_XML_SHA256},
+  };
+  NSFileManager *files = NSFileManager.defaultManager;
+  for (NSString *relative in required) {
+    NSString *path = [root stringByAppendingPathComponent:relative];
+    NSDictionary *attributes = [files attributesOfItemAtPath:path error:error];
+    if (attributes == nil) {
+      return [NSString stringWithFormat:@"The Retro Rewind folder is missing %@.", relative];
+    }
+    if ([attributes fileSize] != [required[relative][@"bytes"] unsignedLongLongValue]) {
+      return [NSString stringWithFormat:@"%@ is not from Retro Rewind %@.", relative,
+                                        @KARTPAD_RR_VERSION];
+    }
+    NSString *hash = SHA256ForFile(path, error);
+    if (hash == nil || ![hash isEqualToString:required[relative][@"sha256"]]) {
+      return [NSString stringWithFormat:@"%@ failed the Retro Rewind %@ integrity check.",
+                                        relative, @KARTPAD_RR_VERSION];
+    }
+  }
+  return nil;
+}
+
+static BOOL WriteRetroRewindRoot(NSString *root) {
+  if (root.length == 0) return NO;
+  const bool wrote = RuntimeConfigFile::WriteSetting(
+      "paths", "retro_rewind_root",
+      RuntimeConfigFile::FormatString(root.fileSystemRepresentation));
+  if (wrote) RuntimeConfigFile::Reload();
+  return wrote;
+}
+
+static NSString *ChooseAndValidateRetroRewindData() {
+  NSOpenPanel *panel = NSOpenPanel.openPanel;
+  panel.title = @"Choose Retro Rewind";
+  panel.message = [NSString stringWithFormat:
+      @"Choose the RetroRewind6 folder from the exact supported %@ pack.",
+      @KARTPAD_RR_VERSION];
+  panel.prompt = @"Choose Retro Rewind";
+  panel.canChooseFiles = NO;
+  panel.canChooseDirectories = YES;
+  panel.allowsMultipleSelection = NO;
+  if ([panel runModal] != NSModalResponseOK || panel.URL == nil) return nil;
+
+  NSString *root = panel.URL.path;
+  if ([[root lastPathComponent] isEqualToString:@"riivolution"]) {
+    root = [root stringByAppendingPathComponent:@KARTPAD_RR_ROOT];
+  }
+  NSError *error = nil;
+  NSString *validation = ValidateRetroRewindRoot(root, &error);
+  if (validation == nil && error == nil) return root;
+  NSAlert *alert = [NSAlert new];
+  alert.messageText = @"Unsupported Retro Rewind Data";
+  alert.informativeText = error.localizedDescription.length > 0
+      ? error.localizedDescription : validation;
+  [alert runModal];
+  return @"";
+}
+#endif
+
 static NSString *ChooseAndValidateGameData() {
   NSOpenPanel *panel = NSOpenPanel.openPanel;
   panel.title = @"Choose Extracted Mario Kart Wii Data";
@@ -343,7 +433,7 @@ static NSString *DiagnosticsReport() {
        "unsignedRuntimeSHA256=%@\n"
        "os=%@\n"
        "architecture=arm64\n"
-       "productProfile=RMCP01-r0-base\n"
+       "productProfile=%@\n"
        "rendererBackend=Metal\n"
        "guestMemoryStrategy=flat-mach-vm\n"
        "schedulerStrategy=cooperative-fibers\n"
@@ -368,7 +458,8 @@ static NSString *DiagnosticsReport() {
        "reviewWarning=Review this report before sharing. Arbitrary runtime text may still require review.\n"
        "privacy=personal paths are replaced; game data, translated code, save contents, credentials, device identifiers, signing material, and unbounded logs are omitted\n",
       generated, version, build, sourceCommit, runtimeHash,
-      NSProcessInfo.processInfo.operatingSystemVersionString, displayMode, resolution,
+      NSProcessInfo.processInfo.operatingSystemVersionString,
+      ActiveRuntimeProfileLabel(), displayMode, resolution,
       interpolation, (long)volume, YesNo(runtime.audioMuted.value_or(false)),
       YesNo(runtime.networkEnabled.value_or(true)), (unsigned long)mappingCount,
       YesNo(gameDataRoot.length > 0), YesNo(gameDataValid),
@@ -389,6 +480,7 @@ static NSString *DiagnosticsReport() {
 @property(nonatomic, strong) NSButton *muteCheckbox;
 @property(nonatomic, strong) NSSlider *volumeSlider;
 @property(nonatomic, strong) NSTextField *volumeValue;
+@property(nonatomic, weak) NSTextField *playerNameField;
 @end
 
 @implementation KartPadMacShellController
@@ -434,7 +526,176 @@ static NSString *DiagnosticsReport() {
   [alert runModal];
 }
 
+#if defined(KARTPAD_RUNTIME_PRODUCT_DUAL)
+- (void)chooseRetroRewindData:(id)sender {
+  (void)sender;
+  NSString *root = ChooseAndValidateRetroRewindData();
+  if (root == nil || root.length == 0) return;
+  if (!WriteRetroRewindRoot(root)) {
+    [self showSimpleAlert:@"Retro Rewind Data Could Not Be Saved"
+                  message:@"KartPad could not update Config.toml."];
+    return;
+  }
+  [self showSimpleAlert:@"Retro Rewind Ready"
+                message:@"KartPad validated the exact supported pack. Choose Retro Rewind from the Game menu, then reopen KartPad."];
+}
+
+- (void)selectRuntimeProfile:(NSString *)profile title:(NSString *)title {
+  [NSUserDefaults.standardUserDefaults setObject:profile
+                                           forKey:kKartPadRuntimeProfileDefaultsKey];
+  [self showSimpleAlert:[NSString stringWithFormat:@"%@ Selected", title]
+                message:@"Quit and reopen KartPad to switch games. Your saves and settings are preserved."];
+}
+
+- (void)useOriginalGame:(id)sender {
+  (void)sender;
+  [self selectRuntimeProfile:kKartPadBaseProfile title:@"Original Mario Kart Wii"];
+}
+
+- (void)useRetroRewind:(id)sender {
+  (void)sender;
+  NSError *error = nil;
+  NSString *validation = ValidateRetroRewindRoot(ConfiguredRetroRewindRoot(), &error);
+  if (validation != nil || error != nil) {
+    NSAlert *required = [NSAlert new];
+    required.messageText = @"Retro Rewind Data Required";
+    required.informativeText = [NSString stringWithFormat:
+        @"KartPad needs the exact Retro Rewind %@ RetroRewind6 folder before it can switch games.",
+        @KARTPAD_RR_VERSION];
+    [required addButtonWithTitle:@"Choose Folder…"];
+    [required addButtonWithTitle:@"Cancel"];
+    if ([required runModal] != NSAlertFirstButtonReturn) return;
+    NSString *root = ChooseAndValidateRetroRewindData();
+    if (root == nil || root.length == 0 || !WriteRetroRewindRoot(root)) return;
+  }
+  [self selectRuntimeProfile:kKartPadRetroProfile title:@"Retro Rewind"];
+}
+#endif
+
 - (void)showMiiManager:(id)sender {
+  (void)sender;
+  while (true) {
+    NSAlert *manager = [NSAlert new];
+    manager.messageText = @"Player Identity";
+    manager.informativeText = KartPadHasPendingMiiChanges()
+        ? @"Changes are pending. Quit and reopen KartPad to apply them before making another change. Your friend codes and progress are preserved when renaming."
+        : @"Set the name used by your Mii and its linked licenses, manage an existing license, or change Mii appearance.";
+    [manager addButtonWithTitle:@"Set Player Name…"];
+    [manager addButtonWithTitle:@"Existing Licenses…"];
+    [manager addButtonWithTitle:@"Mii Appearance…"];
+    [manager addButtonWithTitle:@"Done"];
+    NSModalResponse response = [manager runModal];
+    if (response == NSAlertFirstButtonReturn) [self showPlayerNameEditor];
+    else if (response == NSAlertSecondButtonReturn) [self showLicenseManager];
+    else if (response == NSAlertThirdButtonReturn) [self showMiiAppearanceManager:nil];
+    else return;
+  }
+}
+
+- (void)playerMiiSelectionChanged:(NSPopUpButton *)sender {
+  self.playerNameField.stringValue = sender.selectedItem.representedObject[@"name"];
+  [self.playerNameField selectText:nil];
+}
+
+- (void)showPlayerNameEditor {
+  NSError *error = nil;
+  NSArray<NSDictionary<NSString *, id> *> *records = KartPadMiiRecords(&error);
+  if (error != nil || records.count == 0) {
+    [self showSimpleAlert:@"Player Identity Unavailable"
+                  message:error.localizedDescription ?: @"Start the game once to create its Mii database."];
+    return;
+  }
+  NSPopUpButton *choices = [[NSPopUpButton alloc]
+      initWithFrame:NSMakeRect(0, 38, 320, 26) pullsDown:NO];
+  for (NSDictionary *record in records) {
+    [choices addItemWithTitle:[NSString stringWithFormat:@"Mii %lu · %@",
+        (unsigned long)([record[@"slot"] unsignedIntegerValue] + 1), record[@"name"]]];
+    choices.lastItem.representedObject = record;
+  }
+  NSTextField *name = [NSTextField textFieldWithString:records.firstObject[@"name"]];
+  self.playerNameField = name;
+  choices.target = self;
+  choices.action = @selector(playerMiiSelectionChanged:);
+  name.placeholderString = @"Player name";
+  name.frame = NSMakeRect(0, 0, 320, 26);
+  NSView *fields = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 320, 64)];
+  [fields addSubview:choices];
+  [fields addSubview:name];
+  NSAlert *editor = [NSAlert new];
+  editor.messageText = @"Set Player Name";
+  editor.informativeText = @"Choose the Mii and enter 1–10 characters. On the next launch, its linked licenses will use this name without changing friend codes or progress.";
+  editor.accessoryView = fields;
+  [editor addButtonWithTitle:@"Save for Next Launch"];
+  [editor addButtonWithTitle:@"Cancel"];
+  editor.window.initialFirstResponder = name;
+  if ([editor runModal] != NSAlertFirstButtonReturn) return;
+  NSUInteger index = choices.indexOfSelectedItem;
+  if (index >= records.count) return;
+  NSUInteger count = 0;
+  if (!KartPadStagePlayerName([records[index][@"slot"] unsignedIntegerValue],
+                              name.stringValue, &count, &error)) {
+    [self showSimpleAlert:@"Player Name Could Not Be Changed" message:error.localizedDescription];
+    return;
+  }
+  [self showSimpleAlert:@"Player Name Scheduled"
+                message:@"Quit and reopen KartPad to apply the new name. KartPad backs up the current Mii database and affected saves first."];
+}
+
+- (void)showLicenseManager {
+  NSError *error = nil;
+  NSArray<NSDictionary<NSString *, id> *> *records = KartPadLicenseRecords(&error);
+  if (error != nil || records.count == 0) {
+    [self showSimpleAlert:@"Existing Licenses"
+                  message:error.localizedDescription ?: @"Create a license in the game first, then return here to rename or delete it."];
+    return;
+  }
+  NSPopUpButton *choices = [[NSPopUpButton alloc]
+      initWithFrame:NSMakeRect(0, 0, 430, 26) pullsDown:NO];
+  for (NSDictionary *record in records) {
+    NSString *pending = [record[@"pendingOperation"] length] > 0 ? @" · pending restart" : @"";
+    [choices addItemWithTitle:[NSString stringWithFormat:@"%@ · Slot %lu · %@%@",
+        record[@"profileTitle"], (unsigned long)([record[@"slot"] unsignedIntegerValue] + 1),
+        record[@"name"], pending]];
+  }
+  NSAlert *actions = [NSAlert new];
+  actions.messageText = @"Manage Existing Licenses";
+  actions.informativeText = @"Choose the exact game profile and slot. Changes apply after quitting and reopening KartPad. Rename keeps its account and progress; deletion requires another confirmation.";
+  actions.accessoryView = choices;
+  [actions addButtonWithTitle:@"Rename…"];
+  [actions addButtonWithTitle:@"Delete…"];
+  [actions addButtonWithTitle:@"Cancel"];
+  NSModalResponse response = [actions runModal];
+  if (response != NSAlertFirstButtonReturn && response != NSAlertSecondButtonReturn) return;
+  NSUInteger index = choices.indexOfSelectedItem;
+  if (index >= records.count) return;
+  NSDictionary *record = records[index];
+  NSAlert *confirm = [NSAlert new];
+  confirm.messageText = choices.titleOfSelectedItem;
+  BOOL renamed = response == NSAlertFirstButtonReturn;
+  NSTextField *name = [NSTextField textFieldWithString:record[@"name"]];
+  if (renamed) {
+    confirm.informativeText = @"Enter 1–10 characters. Friend code, online account, records and progress are preserved.";
+    name.frame = NSMakeRect(0, 0, 320, 26);
+    confirm.accessoryView = name;
+    [confirm addButtonWithTitle:@"Save for Next Launch"];
+    confirm.window.initialFirstResponder = name;
+  } else {
+    confirm.informativeText = @"Delete only this license? Its friend code, account, records and progress will be removed. The Mii appearance remains. A backup is created before applying the deletion on the next launch.";
+    [confirm addButtonWithTitle:@"Delete License"];
+  }
+  [confirm addButtonWithTitle:@"Cancel"];
+  if ([confirm runModal] != NSAlertFirstButtonReturn) return;
+  BOOL succeeded = renamed
+      ? KartPadStageLicenseRename(record[@"profileIdentifier"], [record[@"slot"] unsignedIntegerValue],
+                                  record[@"createId"], name.stringValue, &error)
+      : KartPadStageLicenseDeletion(record[@"profileIdentifier"], [record[@"slot"] unsignedIntegerValue],
+                                    record[@"createId"], &error);
+  [self showSimpleAlert:succeeded ? @"License Change Scheduled" : @"License Could Not Be Changed"
+                message:succeeded ? @"Quit and reopen KartPad to apply the change. Your live save is backed up first."
+                                  : error.localizedDescription];
+}
+
+- (void)showMiiAppearanceManager:(id)sender {
   (void)sender;
   while (true) {
     NSError *error = nil;
@@ -453,7 +714,7 @@ static NSString *DiagnosticsReport() {
     NSString *pending = KartPadHasPendingMiiChanges()
         ? @"\n\nPending changes will be applied on the next launch." : @"";
     NSAlert *manager = [NSAlert new];
-    manager.messageText = @"Manage Miis (Experimental)";
+    manager.messageText = @"Mii Appearance";
     manager.informativeText = [NSString stringWithFormat:
         @"%lu Mii%@ available: %@%@",
         (unsigned long)records.count, records.count == 1 ? @"" : @"s",
@@ -569,6 +830,52 @@ static NSString *DiagnosticsReport() {
   event.key.type = SDL_EVENT_KEY_UP;
   event.key.down = false;
   SDL_PushEvent(&event);
+}
+
+- (void)showMultiplayer:(id)sender {
+  (void)sender;
+  NSAlert *alert = [NSAlert new];
+  alert.messageText = @"KartPad Multiplayer";
+  alert.informativeText = @"Local: choose Multiplayer in either game, then register each controller with A. Use Controls → Controller Settings to assign players.\n\nPrivate friend rooms: use the same game, content version, and service. In Nintendo WFC → Friends, exchange friend codes; the host creates a room and friends join from their roster. Original Mario Kart Wii requires a compatible private Wii server. MeleePad room codes and chat are not available.";
+  [alert addButtonWithTitle:@"Done"];
+  [alert addButtonWithTitle:@"Private Wii Server…"];
+  if ([alert runModal] == NSAlertSecondButtonReturn) [self showPrivateServer:sender];
+}
+
+- (void)showPrivateServer:(id)sender {
+  (void)sender;
+  NSAlert *alert = [NSAlert new];
+  alert.messageText = @"Private Wii Server";
+  alert.informativeText = @"Experimental setup for both games. Enter a compatible Wii WFC server's hostname or IPv4 address. Everyone must use the same server. Legacy Wii traffic is unencrypted. Changes apply after quitting and reopening KartPad.";
+  NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 340, 26)];
+  field.stringValue = KartPadPrivateServerHost();
+  field.placeholderString = @"Server hostname or IPv4 address";
+  field.accessibilityLabel = @"Private Wii server address";
+  alert.accessoryView = field;
+  [alert addButtonWithTitle:@"Save for Next Launch"];
+  [alert addButtonWithTitle:@"Cancel"];
+  [alert addButtonWithTitle:@"Use Default Service Next Launch"];
+  [alert.window setInitialFirstResponder:field];
+  NSModalResponse response = [alert runModal];
+  if (response == NSAlertSecondButtonReturn) return;
+  if (response == NSAlertThirdButtonReturn) {
+    [NSUserDefaults.standardUserDefaults removeObjectForKey:@"KartPadPrivateWfcHost"];
+  } else {
+    NSString *host = [field.stringValue stringByTrimmingCharactersInSet:
+        NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!KartPad::Network::ValidPrivateWfcHost(host.UTF8String)) {
+      NSAlert *error = [NSAlert new];
+      error.messageText = @"Invalid Server Address";
+      error.informativeText = @"Enter a hostname or IPv4 address without a URL scheme, path, port, or spaces.";
+      [error runModal];
+      return;
+    }
+    [NSUserDefaults.standardUserDefaults setObject:host forKey:@"KartPadPrivateWfcHost"];
+  }
+  NSAlert *saved = [NSAlert new];
+  saved.messageText = @"Online Service Saved";
+  saved.informativeText = @"Quit and reopen KartPad to apply the change. Private-server compatibility and complete races still need testing.";
+  [saved runModal];
 }
 
 - (void)showControls:(id)sender {
@@ -921,7 +1228,7 @@ static void InstallMenu() {
     appMenu = [[NSMenu alloc] initWithTitle:@"KartPad"];
     appItem.submenu = appMenu;
   }
-  if ([appMenu itemWithTag:kKartPadMenuTag] != nil) return;
+  if ([mainMenu itemWithTag:kKartPadMenuTag] != nil) return;
 
   bool hasStandardApplicationMenu = false;
   for (NSMenuItem *item in appMenu.itemArray) {
@@ -997,48 +1304,88 @@ static void InstallMenu() {
     }
   }
 
-  NSInteger insertIndex = appMenu.numberOfItems;
-  for (NSInteger index = 0; index < appMenu.numberOfItems; ++index) {
-    if ([appMenu itemAtIndex:index].action == @selector(hide:)) {
-      insertIndex = index;
+  NSInteger productMenuIndex = mainMenu.numberOfItems;
+  for (NSInteger index = 0; index < mainMenu.numberOfItems; ++index) {
+    if ([[mainMenu itemAtIndex:index].title isEqualToString:@"Window"]) {
+      productMenuIndex = index;
       break;
     }
   }
-  [appMenu insertItem:NSMenuItem.separatorItem atIndex:insertIndex++];
-  NSMenuItem *data = [[NSMenuItem alloc]
-      initWithTitle:@"Show KartPad Data"
-             action:@selector(showApplicationSupport:)
+  NSMenuItem *gameMenuItem = [[NSMenuItem alloc]
+      initWithTitle:@"Game" action:nil keyEquivalent:@""];
+  gameMenuItem.tag = kKartPadMenuTag;
+  NSMenu *gameMenu = [[NSMenu alloc] initWithTitle:@"Game"];
+#if defined(KARTPAD_RUNTIME_PRODUCT_DUAL)
+  NSString *activeProfile = NSUserDefaults.standardUserDefaults
+      ? [NSUserDefaults.standardUserDefaults stringForKey:kKartPadRuntimeProfileDefaultsKey]
+      : nil;
+  if (activeProfile.length == 0) activeProfile = kKartPadBaseProfile;
+  NSMenuItem *original = [[NSMenuItem alloc]
+      initWithTitle:@"Original Mario Kart Wii"
+             action:@selector(useOriginalGame:) keyEquivalent:@"1"];
+  original.target = Controller();
+  original.state = [activeProfile isEqualToString:kKartPadBaseProfile]
+      ? NSControlStateValueOn : NSControlStateValueOff;
+  [gameMenu addItem:original];
+  NSMenuItem *retro = [[NSMenuItem alloc]
+      initWithTitle:@"Retro Rewind"
+             action:@selector(useRetroRewind:) keyEquivalent:@"2"];
+  retro.target = Controller();
+  retro.state = [activeProfile isEqualToString:kKartPadRetroProfile]
+      ? NSControlStateValueOn : NSControlStateValueOff;
+  [gameMenu addItem:retro];
+  [gameMenu addItem:NSMenuItem.separatorItem];
+#endif
+  NSMenuItem *settings = [[NSMenuItem alloc]
+      initWithTitle:@"Game Settings…" action:@selector(showSettings:)
       keyEquivalent:@""];
-  data.target = Controller();
-  data.tag = kKartPadMenuTag;
-  [appMenu insertItem:data atIndex:insertIndex++];
+  settings.target = Controller();
+  [gameMenu addItem:settings];
+  gameMenuItem.submenu = gameMenu;
+  [mainMenu insertItem:gameMenuItem atIndex:productMenuIndex++];
 
-  NSMenuItem *cache = [[NSMenuItem alloc]
-      initWithTitle:@"Show KartPad Cache"
-             action:@selector(showCache:)
-      keyEquivalent:@""];
-  cache.target = Controller();
-  [appMenu insertItem:cache atIndex:insertIndex++];
-
-  NSMenuItem *gameDataAndSaves = [[NSMenuItem alloc]
-      initWithTitle:@"Game Data & Saves" action:nil keyEquivalent:@""];
-  NSMenu *gameDataMenu = [[NSMenu alloc] initWithTitle:@"Game Data & Saves"];
+  NSMenuItem *dataMenuItem = [[NSMenuItem alloc]
+      initWithTitle:@"Data" action:nil keyEquivalent:@""];
+  NSMenu *dataMenu = [[NSMenu alloc] initWithTitle:@"Data"];
   NSMenuItem *gameData = [[NSMenuItem alloc]
-      initWithTitle:@"Choose Game Data…" action:@selector(chooseGameData:)
+      initWithTitle:@"Choose Mario Kart Wii Data…" action:@selector(chooseGameData:)
       keyEquivalent:@""];
   gameData.target = Controller();
-  [gameDataMenu addItem:gameData];
+  [dataMenu addItem:gameData];
+#if defined(KARTPAD_RUNTIME_PRODUCT_DUAL)
+  NSMenuItem *retroData = [[NSMenuItem alloc]
+      initWithTitle:@"Choose Retro Rewind Data…"
+             action:@selector(chooseRetroRewindData:) keyEquivalent:@""];
+  retroData.target = Controller();
+  [dataMenu addItem:retroData];
+#endif
   NSMenuItem *miis = [[NSMenuItem alloc]
-      initWithTitle:@"Manage Miis…" action:@selector(showMiiManager:)
+      initWithTitle:@"Player Identity…" action:@selector(showMiiManager:)
       keyEquivalent:@""];
   miis.target = Controller();
-  [gameDataMenu addItem:miis];
-  gameDataAndSaves.submenu = gameDataMenu;
-  [appMenu insertItem:gameDataAndSaves atIndex:insertIndex++];
+  [dataMenu addItem:miis];
+  [dataMenu addItem:NSMenuItem.separatorItem];
+  NSMenuItem *data = [[NSMenuItem alloc]
+      initWithTitle:@"Show KartPad Data"
+             action:@selector(showApplicationSupport:) keyEquivalent:@""];
+  data.target = Controller();
+  [dataMenu addItem:data];
+  NSMenuItem *cache = [[NSMenuItem alloc]
+      initWithTitle:@"Show KartPad Cache"
+             action:@selector(showCache:) keyEquivalent:@""];
+  cache.target = Controller();
+  [dataMenu addItem:cache];
+  dataMenuItem.submenu = dataMenu;
+  [mainMenu insertItem:dataMenuItem atIndex:productMenuIndex++];
 
   NSMenuItem *controlsMenuItem = [[NSMenuItem alloc]
       initWithTitle:@"Controls" action:nil keyEquivalent:@""];
   NSMenu *controlsMenu = [[NSMenu alloc] initWithTitle:@"Controls"];
+  NSMenuItem *multiplayer = [[NSMenuItem alloc]
+      initWithTitle:@"Multiplayer…" action:@selector(showMultiplayer:) keyEquivalent:@""];
+  multiplayer.target = Controller();
+  [controlsMenu addItem:multiplayer];
+
   NSMenuItem *controllerSettings = [[NSMenuItem alloc]
       initWithTitle:@"Controller Settings…"
              action:@selector(showControllerSettings:) keyEquivalent:@""];
@@ -1065,8 +1412,11 @@ static void InstallMenu() {
   pairWiimote.target = Controller();
   [controlsMenu addItem:pairWiimote];
   controlsMenuItem.submenu = controlsMenu;
-  [appMenu insertItem:controlsMenuItem atIndex:insertIndex++];
+  [mainMenu insertItem:controlsMenuItem atIndex:productMenuIndex];
 
+  NSMenuItem *helpMenuItem = [[NSMenuItem alloc]
+      initWithTitle:@"Help" action:nil keyEquivalent:@""];
+  NSMenu *helpMenu = [[NSMenu alloc] initWithTitle:@"Help"];
   NSString *diagnosticsTitle =
       [@"Save Diagnostics Report" stringByAppendingString:@"…"];
   NSMenuItem *diagnostics = [[NSMenuItem alloc]
@@ -1074,7 +1424,9 @@ static void InstallMenu() {
              action:@selector(saveDiagnostics:)
       keyEquivalent:@""];
   diagnostics.target = Controller();
-  [appMenu insertItem:diagnostics atIndex:insertIndex];
+  [helpMenu addItem:diagnostics];
+  helpMenuItem.submenu = helpMenu;
+  [mainMenu addItem:helpMenuItem];
 }
 
 void KartPadMacShellInstall(void) {
@@ -1085,15 +1437,41 @@ void KartPadMacShellInstall(void) {
 }
 
 bool KartPadMacShellPrepareGameData(void) {
+  KartPadApplyPrivateServerAtLaunch();
   @autoreleasepool {
+    const std::filesystem::path configPath = RuntimeConfigFile::ResolveConfigPath();
+    const bool hadConfig = std::filesystem::exists(configPath);
     NSError *miiError = nil;
     if (!KartPadApplyPendingMiiDatabase(&miiError)) {
       NSLog(@"[KartPad] pending Mii changes were not applied: %@",
             miiError.localizedDescription);
     }
     KartPadApplyExperimentalWiimotePreference();
-    BeginSession();
     RuntimeConfigFile::EnsureConfigFile();
+    const RuntimeUserConfig initialConfig = RuntimeConfigFile::LoadConfigFile();
+    const bool unconfigured = !initialConfig.dvdRoot && !initialConfig.retroRewindRoot;
+    if (!hadConfig || unconfigured) {
+      RuntimeConfigFile::WriteSetting("video", "resolution_multiplier", "2.0");
+      RuntimeConfigFile::Reload();
+    }
+#if defined(KARTPAD_RUNTIME_PRODUCT_DUAL)
+    NSString *selectedProfile = [NSUserDefaults.standardUserDefaults
+        stringForKey:kKartPadRuntimeProfileDefaultsKey];
+    if (![selectedProfile isEqualToString:kKartPadRetroProfile]) {
+      selectedProfile = kKartPadBaseProfile;
+    }
+    if ([selectedProfile isEqualToString:kKartPadRetroProfile]) {
+      NSError *retroError = nil;
+      if (ValidateRetroRewindRoot(ConfiguredRetroRewindRoot(), &retroError) != nil ||
+          retroError != nil) {
+        selectedProfile = kKartPadBaseProfile;
+        [NSUserDefaults.standardUserDefaults setObject:selectedProfile
+                                                 forKey:kKartPadRuntimeProfileDefaultsKey];
+      }
+    }
+    setenv("KARTPAD_RUNTIME_PROFILE", selectedProfile.UTF8String, 1);
+#endif
+    BeginSession();
 
     // The command-line self-build has already extracted and validated the
     // supplied WBFS. Let it hand that private tree to the app without forcing
@@ -1103,8 +1481,19 @@ bool KartPadMacShellPrepareGameData(void) {
       NSString *root = [NSString stringWithUTF8String:prepared];
       NSError *preparedError = nil;
       NSString *validation = ValidateExtractedRoot(root, &preparedError);
-      const BOOL configured = validation == nil && preparedError == nil &&
-                              WriteGameDataRoot(root);
+      BOOL configured = validation == nil && preparedError == nil &&
+                        WriteGameDataRoot(root);
+#if defined(KARTPAD_RUNTIME_PRODUCT_DUAL)
+      const char *preparedRetro =
+          std::getenv("KARTPAD_SELF_BUILD_RETRO_REWIND_ROOT");
+      if (configured && preparedRetro != nullptr && *preparedRetro != '\0') {
+        NSString *retroRoot = [NSString stringWithUTF8String:preparedRetro];
+        NSError *retroError = nil;
+        NSString *retroValidation = ValidateRetroRewindRoot(retroRoot, &retroError);
+        configured = retroValidation == nil && retroError == nil &&
+                     WriteRetroRewindRoot(retroRoot);
+      }
+#endif
       if (configured) {
         std::cout << "[kartpad-macos] Configured validated self-build game data."
                   << std::endl;

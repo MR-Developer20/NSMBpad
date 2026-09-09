@@ -1,6 +1,10 @@
 # KartPad PRD: Mario Kart Wii, native on Apple platforms
 
-**Status:** Approved for autonomous execution. Written 28 August 2026.
+**Scope:** Original Apple engineering requirements, written 28 August 2026.
+The acceptance matrix remains a reference; initial machine state, delivery
+order and pre-release assessments below are historical. For current work use
+[STATUS.md](STATUS.md) and [MAINTENANCE.md](MAINTENANCE.md). Android's separate
+scope is in [ANDROID.md](ANDROID.md).
 **Audience:** An autonomous engineering agent with full control of an Apple Silicon macOS development machine.
 **Companion document:** `docs/GOAL-LOOP.md`. Read both files before changing code or downloading dependencies.
 **Product name:** **KartPad** (`kartpad`). Use it consistently unless a deliberate rename is recorded.
@@ -107,10 +111,30 @@ The default release model is:
 
 A public prebuilt `.app` or `.ipa` is a separate legal and provenance gate. Do not describe one as releasable merely because a package audit finds no ISO file.
 
-**Current preview decision:** the maintainer separately authorized the free
-unsigned `v0.3.0-preview.4` community IPA under the narrow, unresolved-rights
-boundary in `RIGHTS_AND_LICENSES.md`. That decision does not mark the full PRD
-matrix complete or authorize broader, paid, or official-store distribution.
+**Current community-release decision:** the maintainer separately authorized
+the free unsigned `v0.4.4` iPhone/iPad community IPA and experimental tvOS IPA
+under the narrow, unresolved-rights boundary in
+`RIGHTS_AND_LICENSES.md`. The tvOS artifact remains an experimental
+hardware-bring-up build pending exact-artifact reporter acceptance. This
+decision does not mark the full PRD matrix complete or authorize paid or
+official-store distribution.
+
+### 3.3 Native tvOS extension
+
+Native tvOS is now an approved implementation target, with
+[`docs/TVOS.md`](TVOS.md) as its platform-specific contract. tvOS must reuse the
+same ahead-of-time `KartPadDual` base/Retro Rewind graph and may not introduce a
+runtime PPC interpreter or JIT. Its acceptance is separate from iPhone/iPad:
+an Apple TV build must prove controller-only gameplay, purge recovery, save
+backup/restore, Original mode, and Retro Rewind mode on physical hardware.
+
+A successful tvOS compile is not physical acceptance. Because the maintainer
+does not have Apple TV hardware, the first narrowly distributed build may be a
+hardware bring-up candidate for a small tester cohort. Distribute only the exact
+audited candidate with a narrow checklist, warn testers that no physical launch
+has passed yet, and keep support claims closed until their evidence completes
+the matrix. Offline Retro Rewind acceptance does not establish Retro WFC
+service compatibility.
 
 ---
 

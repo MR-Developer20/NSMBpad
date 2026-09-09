@@ -66,13 +66,21 @@ class IOSGameDataPickerContractTests(unittest.TestCase):
         source = (REPO / "apple/ios/KartPadRuntimeOverlayHost.mm").read_text()
         self.assertIn("KartPadDocumentsRoot(&documentsError)", source)
 
-    def test_empty_folder_scan_explains_container_identity_and_falls_back(self) -> None:
+    def test_empty_installation_folder_scan_falls_back_directly_to_picker(self) -> None:
         source = (REPO / "apple/ios/KartPadRuntimeOverlayHost.mm").read_text()
         self.assertIn("KartPadDocumentsFolderScanDetail", source)
         self.assertIn("NSBundle.mainBundle.bundleIdentifier", source)
         self.assertIn("If a signer changes the bundle identifier", source)
-        self.assertGreaterEqual(source.count('actionWithTitle:@"Choose from Files…"'), 2)
-        self.assertGreaterEqual(source.count('actionWithTitle:@"Try Again"'), 2)
+        self.assertEqual(
+            source.count('actionWithTitle:@"Import from This Installation\'s Folder..."'),
+            2,
+        )
+        self.assertIn("[self presentGameDataPicker];", source)
+        self.assertIn("[self presentGameDataFolderPicker];", source)
+        self.assertEqual(
+            source.count('NSLog(@"[KartPad] %@", KartPadDocumentsFolderScanDetail(error));'),
+            2,
+        )
         self.assertEqual(source.count("KartPadGameDataRootsInDocuments(&error)"), 2)
 
 

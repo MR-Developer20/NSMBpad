@@ -1,71 +1,40 @@
 # KartPad handoff
 
-## Current state
+Use the [maintenance board](MAINTENANCE-BOARD.md) for current ownership,
+candidates and next actions. [STATUS.md](STATUS.md) summarizes published
+packages and acceptance; [KNOWN-ISSUES.md](KNOWN-ISSUES.md) links investigations.
+Do not resume an old preview branch or installation procedure from a dated log.
 
-KartPad `v0.3.0-preview.4` is published from
-`3e43c002d60378bd4975c4637a8e3a149f2d733e`. Its unsigned app 0.3.0 build 11
-IPA has SHA-256
-`6bd4a3bd6a8582dd193093dda7471cecee2cafd7450f51ea59454329a1529b9e`.
-Two local packages and the freshly downloaded hosted artifact are
-byte-identical and pass checksum, ZIP, app, privacy, provenance,
-signing-residue, and private-data audits. Remote main and the dereferenced tag
-match the audited source commit.
+## Before continuing
 
-Preview 4 adds experimental cross-platform Mii import/management and
-experimental macOS-only direct Wii Remote/Nunchuk pairing. The format, storage,
-staging, backup, UI, build, package, entitlement, and cancel-path contracts
-pass. Issue #5 has the targeted tester request at
-`https://github.com/chrissotraidis/kartpad/issues/5#issuecomment-5502139406` and
-remains open for real exported Mii and physical Wii hardware results.
+1. Fetch current main, inspect the working tree and check active task ownership.
+   Preserve unrelated changes; use a separate worktree when another task owns
+   the checkout or a running build.
+2. Read the [maintenance workflow](MAINTENANCE.md) and the relevant board row.
+   Confirm the exact source, package and target device before testing.
+3. Pick an unclaimed, bounded next step. Update the board when its state changes
+   and link one dated evidence record instead of duplicating the running history.
+4. Use the [Android physical handoff](ANDROID-PHYSICAL-HANDOFF.md),
+   [iPhone/iPad acceptance](PHYSICAL-ACCEPTANCE.md) or [tvOS test](TVOS-TESTING.md)
+   for device work. A successful build or emulator run is not physical acceptance.
 
-The immediately preceding signed iPad candidate was installed in place and
-preserved the complete 5,745-file, 4.8-GB KartPad Application Support/NAND tree
-byte-for-byte. Hands-on testing accepted Retro Rewind, ordinary controller
-input, the repaired and reorganized three-dot menu, exit/reopen lifecycle,
-Original Mario Kart Wii, and the existing license.
+## Working boundaries
 
-KartPad `v0.3.0-preview.3` is published from
-`452af2dde3d19508a5e6ced6c03deb0e24b8b509`. The hosted unsigned iPhone/iPad
-IPA is app 0.3.0 build 10 and has SHA-256
-`e839c115a97867949b16fa1c4a2a3472dce4eb3da6c69fff6f40c3eca2abbdcf`.
-The hosted artifact matches the local audited candidate byte-for-byte.
+- Preserve game data, Retro Rewind content, saves, identities and signing state.
+  Never uninstall or clear storage merely to make an update install.
+- Public Android APKs and older private previews use different signers. Follow
+  [installation guidance](INSTALL_ANDROID.md); do not force a signer migration.
+- Keep private inputs, generated game code, raw captures, credentials and device
+  identifiers out of Git and public reports.
+- The scheduled coordinator and its workers **must never upload or publish an
+  IPA**, even if it is built and audited. Manual Apple publication has a separate
+  owner and explicit release authorization; see [MAINTENANCE.md](MAINTENANCE.md).
+- Keep source, build, package, emulator, physical-device and production-online
+  results separate. Check free storage before large builds; use at most one
+  Simulator and close it after validation.
 
-Preview 3 asks Files providers for a local picker copy and scans app-folder
-disc extensions before provider package/directory metadata. User files placed
-in the KartPad folder are preserved; only temporary picker copies are removed.
-The full device build, app audit, deterministic packaging, hosted checksum,
-and fresh hosted re-audit pass. Issue #1 remains open for reporter confirmation
-on the exact affected iPad and Files provider.
-
-The preview offers Original Mario Kart Wii or optional Retro Rewind 6.12.4.
-A physical iPad completed the official pack download, verification,
-installation, launch, and a playable single-player match. General physical
-execution is accepted on iPad and iPhone. Retro WFC remains unavailable during
-external service maintenance; live public online play is not claimed and does
-not block offline Retro Rewind support.
-
-## Next executable work
-
-1. Await Issue #5 testing of a real exported Mii and physical Wii
-   Remote/Nunchuk; fix only reproduced failures with bounded diagnostics.
-2. Await Issue #1's exact Feather-signed Files-container retest.
-3. Continue representative performance and frame-pacing work without changing
-   the accepted 0.3.0 release baseline.
-4. Complete the remaining three- and four-player, touch, motion, controller,
-   audio, thermal, lifecycle, and long-soak rows in `docs/PRD.md`.
-5. When Retro WFC returns, retest production login, matchmaking, a complete
-   race, results, reconnect, and physical-device online play.
-6. Follow `docs/UPSTREAM_UPDATES.md` whenever WiiCompiled or Retro Rewind
-   advances; never accept an unpinned pack or `Code.pul`.
-
-## Operating constraints
-
-- Preserve user game data, Retro Rewind content, saves, and signing state.
-- Never commit or publish a disc image, extracted assets, translated source
-  shards, saves, credentials, signing material, device identifiers, or private
-  captures.
-- Use no more than one Simulator at a time and close it after validation.
-- Recheck available storage before rebuilding large dependency or translation
-  graphs.
-- Keep build proof, physical acceptance, public distribution, performance, and
-  live-service online acceptance as separate claims.
+The ignored local `build/maintenance/CURRENT.md` and `HANDOFF.md` supplement
+public records with machine-specific ownership and private artifact paths.
+Older development checkpoints remain in the [journal](archive/JOURNAL.md),
+[iterations](iterations/) and [dated evidence](artifacts/), with earlier versions
+of this handoff available in Git history.
